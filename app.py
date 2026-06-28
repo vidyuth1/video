@@ -1,8 +1,8 @@
 """
 Chocolate Mold Inspector — Streamlit App
 15 columns (A–O) × 8 rows (1–8) = 120 coordinates per mold frame
-Upload a frame photo, click cavities on the image to mark them missing,
-and export colour-coded Excel heatmaps across all 45+ frames.
+Upload frame photos, click coordinates to mark them missing,
+and export a cumulative Excel heatmap across all frames.
 """
 
 import base64
@@ -29,6 +29,8 @@ ALL_COORDS = [f"{c}{r}" for r in ROWS for c in COLS]
 
 DATA_FILE   = "mold_data.csv"
 IMAGES_DIR  = "frame_images"
+
+MAX_UPLOAD_FILES = 50   # sensible batch limit
 
 PALETTE = {
     "present":  "#2ECC71",
@@ -104,7 +106,7 @@ def pil_to_b64(img: Image.Image, fmt="PNG") -> str:
 
 
 def render_overlay_on_photo(photo: Image.Image, coord_dict: dict,
-                             opacity: int = 150) -> Image.Image:
+                             opacity: int = 60) -> Image.Image:
     """Draw a semi-transparent 15×8 grid overlay on the uploaded mold photo."""
     base = photo.convert("RGBA")
     W, H = base.size
@@ -139,7 +141,7 @@ def render_overlay_on_photo(photo: Image.Image, coord_dict: dict,
             x1 = x0 + cell_w
             y1 = y0 + cell_h
 
-            fill = (46, 204, 113, opacity) if present else (231, 76, 60, opacity + 40)
+            fill = (46, 204, 113, opacity) if present else (231, 76, 60, min(opacity + 40, 255))
             draw.rectangle([x0 + 1, y0 + 1, x1 - 1, y1 - 1], fill=fill)
             draw.rectangle([x0, y0, x1, y1], outline=(255, 255, 255, 180), width=1)
 
@@ -198,271 +200,182 @@ def render_plain_grid(coord_dict: dict,
     return img
 
 
-# ── Interactive click-on-image component ────────────────────────────────────────
-
-def clickable_image_component(img: Image.Image, coord_dict: dict,
-                               component_key: str) -> str | None:
-    """
-    Render the mold image inside an HTML canvas. When the user clicks a cell,
-    the coordinate string is written to a hidden Streamlit text input and
-    returned so the caller can toggle it.
-
-    Returns the clicked coordinate string (e.g. "C3"), or None.
-    """
-    # Build geometry arrays that mirror render_overlay_on_photo
-    W, H = img.size
-    margin_l = max(24, int(W * 0.038))
-    margin_t = max(20, int(H * 0.055))
-    grid_w   = W - margin_l - max(4, int(W * 0.008))
-    grid_h   = H - margin_t - max(4, int(H * 0.008))
-    cell_w   = grid_w / len(COLS)
-    cell_h   = grid_h / len(ROWS)
-
-    # Encode image as base64 PNG
-    b64 = pil_to_b64(img)
-
-    # Serialise coord status for JS
-    coord_json = json.dumps({c: (1 if coord_dict.get(c, True) else 0)
-                              for c in ALL_COORDS})
-    cols_json  = json.dumps(COLS)
-    rows_json  = json.dumps(ROWS)
-
-    # Unique key for the hidden input that carries click results back
-    result_key = f"click_result_{component_key}"
-    if result_key not in st.session_state:
-        st.session_state[result_key] = ""
-
-    # ── HTML / JS canvas component ─────────────────────────────────────────────
-    html = f"""
-<style>
-  #wrapper {{
-    position: relative;
-    display: inline-block;
-    width: 100%;
-    cursor: crosshair;
-    user-select: none;
-  }}
-  #moldCanvas {{
-    width: 100%;
-    height: auto;
-    display: block;
-    border-radius: 8px;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-  }}
-  #tooltip {{
-    position: absolute;
-    background: rgba(0,0,0,0.75);
-    color: #fff;
-    padding: 4px 10px;
-    border-radius: 6px;
-    font: 700 14px/1.4 Arial,sans-serif;
-    pointer-events: none;
-    display: none;
-    z-index: 99;
-    white-space: nowrap;
-  }}
-  #clickMsg {{
-    margin-top: 6px;
-    font: 13px Arial,sans-serif;
-    color: #95A5A6;
-    text-align: center;
-    min-height: 20px;
-  }}
-</style>
-
-<div id="wrapper">
-  <canvas id="moldCanvas"></canvas>
-  <div id="tooltip"></div>
-</div>
-<div id="clickMsg">👆 Click any cavity on the image to toggle it</div>
-
-<script>
-(function() {{
-  const COLS      = {cols_json};
-  const ROWS      = {rows_json};
-  const coords    = {coord_json};
-  const marginL   = {margin_l};
-  const marginT   = {margin_t};
-  const cellW     = {cell_w};
-  const cellH     = {cell_h};
-  const imgW      = {W};
-  const imgH      = {H};
-
-  const canvas  = document.getElementById('moldCanvas');
-  const ctx     = canvas.getContext('2d');
-  const tooltip = document.getElementById('tooltip');
-  const msg     = document.getElementById('clickMsg');
-
-  canvas.width  = imgW;
-  canvas.height = imgH;
-
-  const img = new Image();
-  img.src   = 'data:image/png;base64,{b64}';
-  img.onload = () => ctx.drawImage(img, 0, 0);
-
-  // Scale factor: canvas logical px vs displayed px
-  function getScale() {{
-    const rect = canvas.getBoundingClientRect();
-    return {{ sx: imgW / rect.width, sy: imgH / rect.height }};
-  }}
-
-  function coordFromXY(x, y) {{
-    // x, y are in canvas logical pixels
-    const ci = Math.floor((x - marginL) / cellW);
-    const ri = Math.floor((y - marginT) / cellH);
-    if (ci < 0 || ci >= COLS.length || ri < 0 || ri >= ROWS.length) return null;
-    return COLS[ci] + ROWS[ri];
-  }}
-
-  canvas.addEventListener('mousemove', (e) => {{
-    const rect = canvas.getBoundingClientRect();
-    const {{ sx, sy }} = getScale();
-    const x = (e.clientX - rect.left) * sx;
-    const y = (e.clientY - rect.top)  * sy;
-    const coord = coordFromXY(x, y);
-    if (coord) {{
-      const status = coords[coord] === 1 ? '🟢 Present' : '🔴 Missing';
-      tooltip.textContent = coord + ' — ' + status + ' (click to toggle)';
-      tooltip.style.display = 'block';
-      tooltip.style.left = (e.clientX - rect.left + 12) + 'px';
-      tooltip.style.top  = (e.clientY - rect.top  - 10) + 'px';
-    }} else {{
-      tooltip.style.display = 'none';
-    }}
-  }});
-
-  canvas.addEventListener('mouseleave', () => {{
-    tooltip.style.display = 'none';
-  }});
-
-  canvas.addEventListener('click', (e) => {{
-    const rect = canvas.getBoundingClientRect();
-    const {{ sx, sy }} = getScale();
-    const x = (e.clientX - rect.left) * sx;
-    const y = (e.clientY - rect.top)  * sy;
-    const coord = coordFromXY(x, y);
-    if (!coord) return;
-
-    // Toggle locally for visual feedback
-    coords[coord] = coords[coord] === 1 ? 0 : 1;
-
-    const wasPresent = coords[coord] === 0;   // just toggled so flip
-    msg.textContent = (wasPresent
-      ? '🔴 Marked MISSING: ' : '🟢 Marked PRESENT: ') + coord;
-
-    // Send to Streamlit via postMessage
-    window.parent.postMessage(
-      {{ type: 'streamlit:setComponentValue', value: coord }}, '*'
-    );
-  }});
-}})();
-</script>
-"""
-
-    # Render the component (height = image aspect + a little)
-    display_h = max(400, int(H * 720 / max(W, 1)) + 60)
-    components.html(html, height=display_h, scrolling=False)
-
-    # The postMessage above won't directly update session_state in this
-    # Streamlit version, so we use a URL-param-free workaround:
-    # A second hidden text_input that the user doesn't see acts as
-    # the relay. We return None here — the actual toggling is done
-    # via the Grid Editor tab or Quick Entry which both stay in sync.
-    # The component is purely visual; clicks are captured by the
-    # separate click_coord text input rendered right below.
-    return None
-
-
-# ── Excel heatmap export ────────────────────────────────────────────────────────
+# ── Excel cumulative heatmap export ────────────────────────────────────────────
 
 def _hex_to_argb(hex_color: str) -> str:
     return "FF" + hex_color.lstrip("#").upper()
 
 
-def build_heatmap_workbook(df: pd.DataFrame) -> bytes:
+def _interpolate_color(count: int, max_count: int) -> str:
+    """
+    Return an ARGB hex string interpolated from green (0 misses) to red (max misses).
+    count=0 → green (#2ECC71), count=max_count → red (#E74C3C).
+    """
+    if max_count == 0:
+        t = 0.0
+    else:
+        t = min(count / max_count, 1.0)
+    r = int(46  + (231 - 46)  * t)   # 46  → 231
+    g = int(204 + (76  - 204) * t)   # 204 → 76
+    b = int(113 + (60  - 113) * t)   # 113 → 60
+    return f"FF{r:02X}{g:02X}{b:02X}"
+
+
+def build_cumulative_heatmap_workbook(df: pd.DataFrame) -> bytes:
+    """
+    Build a single-sheet cumulative heatmap.
+    Each cell shows how many frames had that coordinate marked missing.
+    Color scales from green (0 frames missing) to red (all frames missing).
+    """
     wb = Workbook()
-    wb.remove(wb.active)
+    ws = wb.active
+    ws.title = "Cumulative Heatmap"
 
     thin   = Side(style="thin", color="999999")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal="center", vertical="center")
 
-    present_fill = PatternFill("solid", fgColor=_hex_to_argb(PALETTE["present"]))
-    empty_fill   = PatternFill("solid", fgColor=_hex_to_argb(PALETTE["empty"]))
     header_fill  = PatternFill("solid", fgColor="FF2C3E50")
     summary_fill = PatternFill("solid", fgColor="FF34495E")
-
     white_bold   = Font(bold=True, color="FFFFFFFF", name="Arial", size=11)
     cell_font    = Font(name="Arial", size=10)
     cell_font_wh = Font(name="Arial", size=10, color="FFFFFFFF")
-    center       = Alignment(horizontal="center", vertical="center")
 
-    summary_rows = []
+    total_frames = len(df)
 
-    for _, rec in df.iterrows():
-        fname      = str(rec.get("frame_name", rec["frame_id"]))
-        sheet_name = re.sub(r"[\\/*?:\[\]]", "_", fname)[:31]
-        ws         = wb.create_sheet(title=sheet_name)
+    # Compute missing counts per coordinate
+    missing_counts: dict[str, int] = {}
+    for coord in ALL_COORDS:
+        if coord in df.columns:
+            missing_counts[coord] = int((df[coord].astype(str) == "0").sum())
+        else:
+            missing_counts[coord] = 0
 
-        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(COLS) + 1)
-        t = ws.cell(1, 1, f"Mold Inspection — {fname}")
-        t.font = Font(bold=True, color="FFFFFFFF", name="Arial", size=13)
-        t.fill = header_fill; t.alignment = center
-        ws.row_dimensions[1].height = 28
+    max_missing = max(missing_counts.values()) if missing_counts else 1
 
-        ws.cell(2, 1, "").fill = header_fill
+    # ── Title row ──────────────────────────────────────────────────────────────
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(COLS) + 2)
+    title_cell = ws.cell(1, 1,
+        f"Chocolate Mold — Cumulative Missing Count  ({total_frames} frame(s) inspected)")
+    title_cell.font      = Font(bold=True, color="FFFFFFFF", name="Arial", size=13)
+    title_cell.fill      = header_fill
+    title_cell.alignment = center
+    ws.row_dimensions[1].height = 30
+
+    # ── Sub-header: column letters ──────────────────────────────────────────────
+    ws.cell(2, 1, "").fill = header_fill
+    for ci, col in enumerate(COLS, start=2):
+        c = ws.cell(2, ci, col)
+        c.font = white_bold; c.fill = header_fill
+        c.alignment = center; c.border = border
+
+    # "Total missing" column header
+    tot_col = len(COLS) + 2
+    tc = ws.cell(2, tot_col, "Row\nMissing")
+    tc.font = white_bold; tc.fill = summary_fill
+    tc.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    tc.border = border
+    ws.row_dimensions[2].height = 30
+
+    # Column widths
+    ws.column_dimensions["A"].width = 6
+    for ci in range(2, len(COLS) + 2):
+        ws.column_dimensions[get_column_letter(ci)].width = 10
+    ws.column_dimensions[get_column_letter(tot_col)].width = 11
+
+    # ── Data rows ──────────────────────────────────────────────────────────────
+    for ri, row_num in enumerate(ROWS):
+        excel_row = ri + 3
+        ws.row_dimensions[excel_row].height = 24
+
+        # Row header
+        rh = ws.cell(excel_row, 1, str(row_num))
+        rh.font = white_bold; rh.fill = header_fill
+        rh.alignment = center; rh.border = border
+
+        row_missing_total = 0
         for ci, col in enumerate(COLS, start=2):
-            c = ws.cell(2, ci, col)
-            c.font = white_bold; c.fill = header_fill
-            c.alignment = center; c.border = border
-        ws.row_dimensions[2].height = 22
+            coord = f"{col}{row_num}"
+            count = missing_counts.get(coord, 0)
+            row_missing_total += count
 
-        ws.column_dimensions["A"].width = 6
-        for ci in range(2, len(COLS) + 2):
-            ws.column_dimensions[get_column_letter(ci)].width = 9
+            argb  = _interpolate_color(count, max_missing)
+            fill  = PatternFill("solid", fgColor=argb)
 
-        missing_count = 0
-        for ri, row_num in enumerate(ROWS):
-            excel_row = ri + 3
-            ws.row_dimensions[excel_row].height = 22
-            rh = ws.cell(excel_row, 1, str(row_num))
-            rh.font = white_bold; rh.fill = header_fill
-            rh.alignment = center; rh.border = border
+            # Choose text colour for legibility
+            # Dark text when close to green, white text when closer to red
+            t = count / max_missing if max_missing > 0 else 0
+            font = cell_font_wh if t > 0.45 else cell_font
 
-            for ci, col in enumerate(COLS, start=2):
-                coord   = f"{col}{row_num}"
-                present = str(rec.get(coord, "1")) == "1"
-                cell    = ws.cell(excel_row, ci, coord)
-                cell.fill      = present_fill if present else empty_fill
-                cell.font      = cell_font    if present else cell_font_wh
-                cell.alignment = center
-                cell.border    = border
-                if not present:
-                    missing_count += 1
+            cell = ws.cell(excel_row, ci, count)
+            cell.fill      = fill
+            cell.font      = font
+            cell.alignment = center
+            cell.border    = border
 
-        stats_row = len(ROWS) + 4
-        ws.merge_cells(start_row=stats_row, start_column=1,
-                       end_row=stats_row, end_column=len(COLS) + 1)
-        ts        = str(rec.get("timestamp", ""))
-        info_cell = ws.cell(stats_row, 1,
-                            f"Inspected: {ts}   |   Missing: {missing_count}   |   "
-                            f"Present: {len(ALL_COORDS) - missing_count}   |   "
-                            f"Total: {len(ALL_COORDS)}")
-        info_cell.font      = Font(italic=True, name="Arial", size=10, color="FF555555")
-        info_cell.alignment = Alignment(horizontal="left", vertical="center")
+        # Row total
+        row_total_cell = ws.cell(excel_row, tot_col, row_missing_total)
+        row_total_cell.font = Font(bold=True, name="Arial", size=10)
+        row_total_cell.fill = summary_fill
+        row_total_cell.alignment = center
+        row_total_cell.border = border
+        # White text for dark background
+        row_total_cell.font = Font(bold=True, name="Arial", size=10, color="FFFFFFFF")
 
-        summary_rows.append((fname, missing_count,
-                             len(ALL_COORDS) - missing_count, ts))
+    # ── Column totals row ──────────────────────────────────────────────────────
+    totals_row = len(ROWS) + 3
+    ws.row_dimensions[totals_row].height = 24
 
-    # Summary sheet
-    ws_sum = wb.create_sheet(title="Summary", index=0)
-    headers = ["Frame", "Missing", "Present", "Total", "% Present", "Timestamp"]
-    ws_sum.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
-    t = ws_sum.cell(1, 1, "Chocolate Mold Inspection — Summary Report")
+    col_label = ws.cell(totals_row, 1, "Total")
+    col_label.font = Font(bold=True, color="FFFFFFFF", name="Arial", size=10)
+    col_label.fill = summary_fill
+    col_label.alignment = center
+    col_label.border = border
+
+    grand_total = 0
+    for ci, col in enumerate(COLS, start=2):
+        coord = f"{col}1"[0] + "x"   # dummy; we iterate by column letter
+        # Re-derive: sum all rows for this column
+        col_letter = COLS[ci - 2]
+        col_total = sum(missing_counts.get(f"{col_letter}{r}", 0) for r in ROWS)
+        grand_total += col_total
+
+        ct = ws.cell(totals_row, ci, col_total)
+        ct.font      = Font(bold=True, name="Arial", size=10)
+        ct.fill      = summary_fill
+        ct.alignment = center
+        ct.border    = border
+        ct.font      = Font(bold=True, name="Arial", size=10, color="FFFFFFFF")
+
+    # Grand total corner
+    gt = ws.cell(totals_row, tot_col, grand_total)
+    gt.font      = Font(bold=True, name="Arial", size=11, color="FFFFFFFF")
+    gt.fill      = PatternFill("solid", fgColor="FF1A252F")
+    gt.alignment = center
+    gt.border    = border
+
+    # ── Legend row ─────────────────────────────────────────────────────────────
+    legend_row = totals_row + 2
+    ws.merge_cells(start_row=legend_row, start_column=1,
+                   end_row=legend_row, end_column=len(COLS) + 2)
+    leg = ws.cell(legend_row, 1,
+        f"Each cell = number of frames where that cavity was missing  |  "
+        f"Green = never missing  →  Red = missing in all {total_frames} frame(s)  |  "
+        f"Total inspected: {total_frames} frames, {len(ALL_COORDS)} positions each")
+    leg.font      = Font(italic=True, name="Arial", size=9, color="FF555555")
+    leg.alignment = Alignment(horizontal="left", vertical="center")
+    ws.row_dimensions[legend_row].height = 18
+
+    # ── Summary tab ────────────────────────────────────────────────────────────
+    ws_sum = wb.create_sheet(title="Frame Summary", index=1)
+    sum_headers = ["Frame", "Missing", "Present", "Total", "% Present", "Timestamp"]
+    ws_sum.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(sum_headers))
+    t = ws_sum.cell(1, 1, "Chocolate Mold Inspection — Frame Summary")
     t.font = Font(bold=True, color="FFFFFFFF", name="Arial", size=14)
     t.fill = header_fill; t.alignment = center
     ws_sum.row_dimensions[1].height = 30
 
-    for ci, h in enumerate(headers, 1):
+    for ci, h in enumerate(sum_headers, 1):
         c = ws_sum.cell(2, ci, h)
         c.font = white_bold; c.fill = summary_fill
         c.alignment = center; c.border = border
@@ -471,35 +384,41 @@ def build_heatmap_workbook(df: pd.DataFrame) -> bytes:
     for ci, w in enumerate([30, 10, 10, 10, 12, 22], 1):
         ws_sum.column_dimensions[get_column_letter(ci)].width = w
 
-    for ri, (fname, missing, present, ts) in enumerate(summary_rows, start=3):
-        total    = missing + present
+    for ri, (_, rec) in enumerate(df.iterrows(), start=3):
+        fname   = str(rec.get("frame_name", rec["frame_id"]))
+        missing = sum(1 for c in ALL_COORDS if str(rec.get(c, "1")) == "0")
+        present = len(ALL_COORDS) - missing
+        ts      = str(rec.get("timestamp", ""))
+        total   = len(ALL_COORDS)
         row_vals = [fname, missing, present, total, f"=C{ri}/D{ri}", ts]
         for ci, val in enumerate(row_vals, 1):
             c = ws_sum.cell(ri, ci, val)
             c.alignment = center; c.border = border
             c.font = Font(name="Arial", size=10)
             if ci == 2 and total > 0:
-                intensity  = min(missing / total, 1.0)
-                r = int(231 * intensity + 46  * (1 - intensity))
-                g = int(76  * intensity + 204 * (1 - intensity))
-                b = int(60  * intensity + 113 * (1 - intensity))
-                c.fill = PatternFill("solid", fgColor=f"FF{r:02X}{g:02X}{b:02X}")
+                intensity = min(missing / total, 1.0)
+                r_val = int(231 * intensity + 46  * (1 - intensity))
+                g_val = int(76  * intensity + 204 * (1 - intensity))
+                b_val = int(60  * intensity + 113 * (1 - intensity))
+                c.fill = PatternFill("solid", fgColor=f"FF{r_val:02X}{g_val:02X}{b_val:02X}")
             if ci == 5:
                 c.number_format = "0.0%"
         ws_sum.row_dimensions[ri].height = 20
 
-    total_row = len(summary_rows) + 3
-    ws_sum.cell(total_row, 1, "TOTALS").font = Font(bold=True, name="Arial", size=10)
-    if summary_rows:
-        ws_sum.cell(total_row, 2, f"=SUM(B3:B{total_row-1})").font = Font(bold=True, name="Arial")
-        ws_sum.cell(total_row, 3, f"=SUM(C3:C{total_row-1})").font = Font(bold=True, name="Arial")
-        ws_sum.cell(total_row, 4, f"=SUM(D3:D{total_row-1})").font = Font(bold=True, name="Arial")
-        ws_sum.cell(total_row, 5, f"=C{total_row}/D{total_row}").number_format = "0.0%"
-        ws_sum.cell(total_row, 5).font = Font(bold=True, name="Arial")
+    total_data_row = len(df) + 3
+    ws_sum.cell(total_data_row, 1, "TOTALS").font = Font(bold=True, name="Arial", size=10)
+    if not df.empty:
+        last_data = total_data_row - 1
+        ws_sum.cell(total_data_row, 2, f"=SUM(B3:B{last_data})").font = Font(bold=True, name="Arial")
+        ws_sum.cell(total_data_row, 3, f"=SUM(C3:C{last_data})").font = Font(bold=True, name="Arial")
+        ws_sum.cell(total_data_row, 4, f"=SUM(D3:D{last_data})").font = Font(bold=True, name="Arial")
+        pct_cell = ws_sum.cell(total_data_row, 5, f"=C{total_data_row}/D{total_data_row}")
+        pct_cell.number_format = "0.0%"
+        pct_cell.font = Font(bold=True, name="Arial")
     for ci in range(1, 7):
-        ws_sum.cell(total_row, ci).border = border
-        ws_sum.cell(total_row, ci).alignment = center
-    ws_sum.row_dimensions[total_row].height = 22
+        ws_sum.cell(total_data_row, ci).border = border
+        ws_sum.cell(total_data_row, ci).alignment = center
+    ws_sum.row_dimensions[total_data_row].height = 22
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -509,23 +428,22 @@ def build_heatmap_workbook(df: pd.DataFrame) -> bytes:
 # ── Session-state helpers ───────────────────────────────────────────────────────
 
 def init_state():
-    if "df"               not in st.session_state:
-        st.session_state.df = load_data()
-    if "active_frame_id"  not in st.session_state:
-        st.session_state.active_frame_id = None
-    if "coord_dict"       not in st.session_state:
-        st.session_state.coord_dict = {c: True for c in ALL_COORDS}
-    if "dirty"            not in st.session_state:
-        st.session_state.dirty = False
-    if "frame_image"      not in st.session_state:
-        st.session_state.frame_image = None   # PIL Image or None
+    defaults = {
+        "df":               load_data(),
+        "active_frame_id":  None,
+        "coord_dict":       {c: True for c in ALL_COORDS},
+        "dirty":            False,
+        "frame_image":      None,
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
 
 def load_frame(frame_id: str):
     st.session_state.active_frame_id = frame_id
     st.session_state.coord_dict      = get_frame_dict(st.session_state.df, frame_id)
     st.session_state.dirty           = False
-    # Load associated image if saved
     row = st.session_state.df[st.session_state.df["frame_id"] == frame_id]
     if not row.empty:
         img_path = str(row.iloc[0].get("image_path", ""))
@@ -535,7 +453,6 @@ def load_frame(frame_id: str):
 
 
 def auto_save(frame_id: str, frame_name: str, image_path: str = ""):
-    """Save current coord_dict immediately (used after click-toggles)."""
     if not image_path:
         row = st.session_state.df[st.session_state.df["frame_id"] == frame_id]
         if not row.empty:
@@ -545,6 +462,21 @@ def auto_save(frame_id: str, frame_name: str, image_path: str = ""):
         st.session_state.coord_dict, image_path)
     save_data(st.session_state.df)
     st.session_state.dirty = False
+
+
+def navigate_to_adjacent_frame(direction: int):
+    """Load the next (+1) or previous (-1) frame relative to the current one."""
+    df       = st.session_state.df
+    frame_ids = df["frame_id"].tolist()
+    if not frame_ids:
+        return
+    current = st.session_state.active_frame_id
+    if current not in frame_ids:
+        load_frame(frame_ids[0])
+        return
+    idx     = frame_ids.index(current)
+    new_idx = (idx + direction) % len(frame_ids)
+    load_frame(frame_ids[new_idx])
 
 
 # ── Main app ───────────────────────────────────────────────────────────────────
@@ -558,7 +490,6 @@ def main():
     )
 
     init_state()
-    df = st.session_state.df
 
     # ── CSS ────────────────────────────────────────────────────────────────────
     st.markdown("""
@@ -587,6 +518,10 @@ def main():
         color: #BDC3C7;
         margin-bottom: 8px;
     }
+    .nav-btn > button {
+        background: #2C3E50 !important;
+        color: #ECF0F1 !important;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -599,8 +534,8 @@ def main():
         # ── Batch image upload ─────────────────────────────────────────────────
         st.subheader("📸 Upload Frame Photos")
         st.markdown(
-            '<div class="upload-hint">Upload one or many frame images at once. '
-            'A new frame record is created for each photo automatically.</div>',
+            f'<div class="upload-hint">Upload up to {MAX_UPLOAD_FILES} frame images at once. '
+            'A new record is created for each photo automatically.</div>',
             unsafe_allow_html=True)
 
         uploaded_photos = st.file_uploader(
@@ -612,15 +547,18 @@ def main():
         )
 
         if uploaded_photos:
+            # Enforce upload cap
+            if len(uploaded_photos) > MAX_UPLOAD_FILES:
+                st.warning(f"Only the first {MAX_UPLOAD_FILES} images will be imported.")
+                uploaded_photos = uploaded_photos[:MAX_UPLOAD_FILES]
+
             new_count = 0
             for uf in uploaded_photos:
-                # Use filename (without extension) as default frame name
                 base_name = os.path.splitext(uf.name)[0]
-                # Check if already imported (same name)
                 existing_names = st.session_state.df["frame_name"].tolist() \
                     if not st.session_state.df.empty else []
                 if base_name in existing_names:
-                    continue  # skip duplicates silently
+                    continue
                 fid   = f"frame_{int(time.time() * 1000)}_{new_count}"
                 ipath = save_frame_image(fid, uf)
                 fresh = {c: True for c in ALL_COORDS}
@@ -630,32 +568,10 @@ def main():
 
             if new_count:
                 save_data(st.session_state.df)
-                df = st.session_state.df
                 st.success(f"Imported {new_count} new frame(s).")
-                # Auto-load the last uploaded frame
                 last_id = st.session_state.df["frame_id"].iloc[-1]
                 load_frame(last_id)
                 st.rerun()
-
-        st.divider()
-
-        # ── Manual new frame (no photo) ────────────────────────────────────────
-        st.subheader("➕ Add Frame Manually")
-        with st.form("new_frame_form", clear_on_submit=True):
-            new_name  = st.text_input("Frame name / batch ID",
-                                      placeholder="e.g. Frame 46 — Batch 7")
-            submitted = st.form_submit_button("Create Frame", use_container_width=True)
-            if submitted:
-                if not new_name.strip():
-                    st.error("Please enter a frame name.")
-                else:
-                    fid   = f"frame_{int(time.time() * 1000)}"
-                    fresh = {c: True for c in ALL_COORDS}
-                    st.session_state.df = upsert_frame(
-                        st.session_state.df, fid, new_name.strip(), fresh, "")
-                    save_data(st.session_state.df)
-                    load_frame(fid)
-                    st.rerun()
 
         st.divider()
 
@@ -664,7 +580,7 @@ def main():
         df = st.session_state.df
 
         if df.empty:
-            st.info("No frames yet — upload photos or create one above.")
+            st.info("No frames yet — upload photos above to get started.")
         else:
             frame_options = df["frame_name"].tolist()
             frame_ids     = df["frame_id"].tolist()
@@ -684,7 +600,6 @@ def main():
                 st.rerun()
             if col_del.button("🗑 Delete", use_container_width=True):
                 fid_to_del = frame_ids[selected_idx]
-                # Remove image file
                 row = st.session_state.df[
                     st.session_state.df["frame_id"] == fid_to_del]
                 if not row.empty:
@@ -705,21 +620,18 @@ def main():
 
         # ── Export ─────────────────────────────────────────────────────────────
         st.subheader("📥 Export")
-        export_scope = st.radio("Scope", ["Current frame only", "All frames"], index=1)
 
-        if st.button("⬇️ Download Heatmap (.xlsx)",
+        df = st.session_state.df
+        if st.button("⬇️ Download Cumulative Heatmap (.xlsx)",
                      use_container_width=True, disabled=df.empty):
-            export_df = df
-            if export_scope == "Current frame only" and st.session_state.active_frame_id:
-                export_df = df[df["frame_id"] == st.session_state.active_frame_id]
-            if export_df.empty:
+            if df.empty:
                 st.warning("No data to export.")
             else:
-                xlsx_bytes = build_heatmap_workbook(export_df)
+                xlsx_bytes = build_cumulative_heatmap_workbook(df)
                 now        = datetime.now().strftime("%Y%m%d_%H%M%S")
                 st.download_button(
                     "💾 Save file", data=xlsx_bytes,
-                    file_name=f"mold_heatmap_{now}.xlsx",
+                    file_name=f"mold_cumulative_heatmap_{now}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True)
 
@@ -752,8 +664,7 @@ def main():
 
     if st.session_state.active_frame_id is None:
         st.markdown("## 🍫 Chocolate Mold Inspector")
-        st.info("Upload frame photos in the sidebar, or create a frame manually, "
-                "then click **Load** to begin inspection.")
+        st.info("Upload frame photos in the sidebar, then click **Load** to begin inspection.")
         if not df.empty:
             st.subheader("All Frames — Overview")
             summary = []
@@ -780,12 +691,36 @@ def main():
     coord_dict  = st.session_state.coord_dict
     photo       = st.session_state.frame_image
 
+    frame_ids   = df["frame_id"].tolist()
+    current_idx = frame_ids.index(active_id) if active_id in frame_ids else 0
+    total_frames = len(frame_ids)
+
     missing_list  = [c for c, v in coord_dict.items() if not v]
     present_count = len(ALL_COORDS) - len(missing_list)
 
-    # Header
-    st.markdown(f"## 🍫 {frame_name}")
-    st.caption(f"Frame ID: `{active_id}` | Saved: {active_row.get('timestamp','—')}")
+    # ── Header + navigation ────────────────────────────────────────────────────
+    header_left, header_right = st.columns([3, 1])
+    with header_left:
+        st.markdown(f"## 🍫 {frame_name}")
+        st.caption(
+            f"Frame {current_idx + 1} of {total_frames}  |  "
+            f"ID: `{active_id}`  |  Saved: {active_row.get('timestamp','—')}"
+        )
+    with header_right:
+        nav_c1, nav_c2 = st.columns(2)
+        with nav_c1:
+            if st.button("◀ Prev", use_container_width=True,
+                         disabled=(total_frames <= 1),
+                         help="Go to previous frame"):
+                navigate_to_adjacent_frame(-1)
+                st.rerun()
+        with nav_c2:
+            if st.button("Next ▶", use_container_width=True,
+                         disabled=(total_frames <= 1),
+                         help="Go to next frame",
+                         type="primary"):
+                navigate_to_adjacent_frame(+1)
+                st.rerun()
 
     # Stats
     col_a, col_b, col_c, col_d = st.columns(4)
@@ -844,46 +779,23 @@ def main():
         with tab_photo:
             st.markdown(
                 "The mold photo is shown below with a **semi-transparent grid overlay**. "
-                "Use the coordinate selector on the right to mark cavities as missing — "
-                "the overlay updates instantly.")
+                "Click any coordinate button in the map to toggle it missing or present.")
 
             left_col, right_col = st.columns([3, 1])
 
             with right_col:
-                st.markdown("#### 🔴 Mark as Missing")
-                click_coord = st.selectbox(
-                    "Select coordinate",
-                    options=["— choose —"] + ALL_COORDS,
-                    key="photo_coord_select",
-                )
-                col_miss, col_pres = st.columns(2)
-                if col_miss.button("Mark Missing", use_container_width=True,
-                                   type="primary",
-                                   disabled=(click_coord == "— choose —")):
-                    if click_coord != "— choose —":
-                        st.session_state.coord_dict[click_coord] = False
-                        auto_save(active_id, frame_name)
-                        st.rerun()
-                if col_pres.button("Mark Present", use_container_width=True,
-                                   disabled=(click_coord == "— choose —")):
-                    if click_coord != "— choose —":
-                        st.session_state.coord_dict[click_coord] = True
-                        auto_save(active_id, frame_name)
-                        st.rerun()
-
-                st.divider()
                 st.markdown("#### 🔁 Bulk Actions")
-                if st.button("✅ All Present", use_container_width=True):
+                if st.button("✅ All Present", use_container_width=True, key="pi_all_pres"):
                     for c in ALL_COORDS:
                         st.session_state.coord_dict[c] = True
                     auto_save(active_id, frame_name)
                     st.rerun()
-                if st.button("❌ All Missing", use_container_width=True):
+                if st.button("❌ All Missing", use_container_width=True, key="pi_all_miss"):
                     for c in ALL_COORDS:
                         st.session_state.coord_dict[c] = False
                     auto_save(active_id, frame_name)
                     st.rerun()
-                if st.button("🔄 Invert", use_container_width=True):
+                if st.button("🔄 Invert", use_container_width=True, key="pi_invert"):
                     for c in ALL_COORDS:
                         st.session_state.coord_dict[c] = not st.session_state.coord_dict[c]
                     auto_save(active_id, frame_name)
@@ -907,19 +819,16 @@ def main():
                 else:
                     st.success("All present!")
 
-                # Overlay opacity
                 st.divider()
-                opacity = st.slider("Overlay opacity", 60, 220, 150, 10,
+                opacity = st.slider("Overlay opacity", 60, 220, 60, 10,
                                     key="overlay_opacity")
 
             with left_col:
-                # Render the photo with overlay
                 overlay_img = render_overlay_on_photo(
                     photo, st.session_state.coord_dict,
-                    opacity=st.session_state.get("overlay_opacity", 150))
+                    opacity=st.session_state.get("overlay_opacity", 60))
                 st.image(overlay_img, use_container_width=True, caption=frame_name)
 
-                # Download overlay image
                 buf = io.BytesIO()
                 overlay_img.save(buf, format="PNG")
                 st.download_button(
@@ -929,8 +838,8 @@ def main():
                     mime="image/png",
                 )
 
-                # ── Row-by-row quick reference ─────────────────────────────────
-                st.markdown("#### Coordinate map")
+                # ── Coordinate map (click to toggle) ──────────────────────────
+                st.markdown("#### Coordinate map — click to toggle")
                 col_headers = st.columns([0.4] + [1]*len(COLS))
                 col_headers[0].markdown("**Row**")
                 for i, c in enumerate(COLS):
@@ -989,7 +898,6 @@ def main():
                 auto_save(active_id, frame_name)
                 st.success("Saved!"); st.rerun()
 
-        # Header row
         hcols = st.columns([0.5] + [1]*len(COLS))
         hcols[0].markdown("**↓**")
         for i, lbl in enumerate(COLS):
@@ -1079,7 +987,7 @@ def main():
     with tab_vis:
         if photo:
             st.markdown("Overlay rendered on actual mold photo. 🟢 Present &nbsp; 🔴 Missing")
-            opa = st.slider("Overlay opacity", 60, 220, 150, 10, key="vis_opacity")
+            opa = st.slider("Overlay opacity", 60, 220, 60, 10, key="vis_opacity")
             ov  = render_overlay_on_photo(photo, st.session_state.coord_dict, opacity=opa)
             st.image(ov, use_container_width=True, caption=frame_name)
             buf = io.BytesIO(); ov.save(buf, format="PNG")
@@ -1113,6 +1021,26 @@ def main():
                     unsafe_allow_html=True)
         else:
             st.success("🎉 All 120 positions are present!")
+
+    # ── Bottom navigation (Next Frame button) ──────────────────────────────────
+    st.divider()
+    bot_left, bot_mid, bot_right = st.columns([1, 2, 1])
+    with bot_left:
+        if st.button("◀ Previous Frame", use_container_width=True,
+                     disabled=(total_frames <= 1)):
+            navigate_to_adjacent_frame(-1)
+            st.rerun()
+    with bot_mid:
+        st.markdown(
+            f"<div style='text-align:center;color:#95A5A6;padding-top:8px'>"
+            f"Frame <strong>{current_idx + 1}</strong> of <strong>{total_frames}</strong></div>",
+            unsafe_allow_html=True)
+    with bot_right:
+        if st.button("Next Frame ▶", use_container_width=True,
+                     disabled=(total_frames <= 1),
+                     type="primary"):
+            navigate_to_adjacent_frame(+1)
+            st.rerun()
 
 
 if __name__ == "__main__":
