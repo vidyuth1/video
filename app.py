@@ -106,8 +106,10 @@ def pil_to_b64(img: Image.Image, fmt="PNG") -> str:
 
 
 def render_overlay_on_photo(photo: Image.Image, coord_dict: dict,
-                             opacity: int = 60) -> Image.Image:
-    """Draw a semi-transparent 15×8 grid overlay on the uploaded mold photo."""
+                             opacity: int = 102) -> Image.Image:
+    """Draw a semi-transparent 15×8 grid overlay on the uploaded mold photo.
+       Opacity is set to 102 (40% of 255) by default.
+    """
     base = photo.convert("RGBA")
     W, H = base.size
 
@@ -141,7 +143,8 @@ def render_overlay_on_photo(photo: Image.Image, coord_dict: dict,
             x1 = x0 + cell_w
             y1 = y0 + cell_h
 
-            fill = (46, 204, 113, opacity) if present else (231, 76, 60, min(opacity + 40, 255))
+            # Both green and red now lock to the same 40% (102) opacity level
+            fill = (46, 204, 113, opacity) if present else (231, 76, 60, opacity)
             draw.rectangle([x0 + 1, y0 + 1, x1 - 1, y1 - 1], fill=fill)
             draw.rectangle([x0, y0, x1, y1], outline=(255, 255, 255, 180), width=1)
 
@@ -216,7 +219,7 @@ def _interpolate_color(count: int, max_count: int) -> str:
     else:
         t = min(count / max_count, 1.0)
     r = int(46  + (231 - 46)  * t)   # 46  → 231
-    g = int(204 + (76  - 204) * t)   # 204 → 76
+    g = int(204 + (76   - 204) * t)   # 204 → 76
     b = int(113 + (60  - 113) * t)   # 113 → 60
     return f"FF{r:02X}{g:02X}{b:02X}"
 
@@ -775,525 +778,57 @@ def main():
 
     # ── Header + navigation ────────────────────────────────────────────────────
     header_left, header_right = st.columns([3, 1])
+    
     with header_left:
         st.markdown(f"## 🍫 {frame_name}")
         st.caption(
             f"Frame {current_idx + 1} of {total_frames}  |  "
             f"ID: `{active_id}`  |  Saved: {active_row.get('timestamp','—')}"
         )
+        
     with header_right:
-        nav_c1, nav_c2 = st.columns(2)
-        with nav_c1:
-            if st.button("◀ Prev", use_container_width=True,
-                         disabled=(total_frames <= 1),
-                         help="Go to previous frame"):
-                navigate_to_adjacent_frame(-1)
-                st.rerun()
-        with nav_c2:
-            if st.button("Next ▶", use_container_width=True,
-                         disabled=(total_frames <= 1),
-                         help="Go to next frame",
-                         type="primary"):
-                navigate_to_adjacent_frame(+1)
-                st.rerun()
-
-    # Stats
-    col_a, col_b, col_c, col_d = st.columns(4)
-    with col_a:
-        st.markdown(
-            f'<div class="stat-box"><div class="stat-number green">{present_count}</div>'
-            f'<div class="stat-label">Present</div></div>', unsafe_allow_html=True)
-    with col_b:
-        st.markdown(
-            f'<div class="stat-box"><div class="stat-number red">{len(missing_list)}</div>'
-            f'<div class="stat-label">Missing</div></div>', unsafe_allow_html=True)
-    with col_c:
-        pct = present_count / len(ALL_COORDS) * 100
-        st.markdown(
-            f'<div class="stat-box"><div class="stat-number">{pct:.1f}%</div>'
-            f'<div class="stat-label">Fill Rate</div></div>', unsafe_allow_html=True)
-    with col_d:
-        st.markdown(
-            f'<div class="stat-box"><div class="stat-number">{len(ALL_COORDS)}</div>'
-            f'<div class="stat-label">Total Positions</div></div>', unsafe_allow_html=True)
-
-    st.divider()
-
-    # ── Photo upload for THIS frame ────────────────────────────────────────────
-    with st.expander(
-        "📷 " + ("Replace frame photo" if photo else "Attach a photo to this frame"),
-        expanded=(photo is None)):
-
-        per_frame_upload = st.file_uploader(
-            "Upload mold photo for this frame",
-            type=["png", "jpg", "jpeg", "bmp", "tiff", "webp"],
-            key=f"photo_{active_id}",
-            label_visibility="collapsed",
-        )
-        if per_frame_upload:
-            ipath  = save_frame_image(active_id, per_frame_upload)
-            photo  = Image.open(per_frame_upload).convert("RGB")
-            st.session_state.frame_image = photo
-            st.session_state.df = upsert_frame(
-                st.session_state.df, active_id, frame_name, coord_dict, ipath)
-            save_data(st.session_state.df)
-            st.success("Photo saved to this frame.")
-            st.rerun()
-
-    # ── Tabs ──────────────────────────────────────────────────────────────────
-    if photo:
-        tab_photo, tab_grid, tab_quick, tab_vis = st.tabs([
-            "🖼️ Photo Inspector", "🔲 Grid Editor", "⌨️ Quick Entry", "📊 Overlay Preview"])
-    else:
-        tab_grid, tab_quick, tab_vis = st.tabs([
-            "🔲 Grid Editor", "⌨️ Quick Entry", "📊 Grid Preview"])
-        tab_photo = None
-
-    # ── Tab: Photo Inspector ───────────────────────────────────────────────────
-    if tab_photo and photo:
-        with tab_photo:
-            # ── Process any pending canvas click from query params ─────────────
-            qp = st.query_params
-            pending_click = qp.get("click", "")
-            if pending_click and pending_click in ALL_COORDS:
-                st.session_state.coord_dict[pending_click] = \
-                    not st.session_state.coord_dict.get(pending_click, True)
-                auto_save(active_id, frame_name)
-                st.query_params.clear()
-                st.rerun()
-
-            # ── Top control strip ─────────────────────────────────────────────
-            ctrl_c1, ctrl_c2, ctrl_c3, ctrl_c4, ctrl_c5 = st.columns([1, 1, 1, 1, 3])
-            with ctrl_c1:
-                if st.button("✅ All Present", use_container_width=True, key="pi_all_pres"):
-                    for c in ALL_COORDS:
-                        st.session_state.coord_dict[c] = True
-                    auto_save(active_id, frame_name)
-                    st.rerun()
-            with ctrl_c2:
-                if st.button("❌ All Missing", use_container_width=True, key="pi_all_miss"):
-                    for c in ALL_COORDS:
-                        st.session_state.coord_dict[c] = False
-                    auto_save(active_id, frame_name)
-                    st.rerun()
-            with ctrl_c3:
-                if st.button("🔄 Invert", use_container_width=True, key="pi_invert"):
-                    for c in ALL_COORDS:
-                        st.session_state.coord_dict[c] = not st.session_state.coord_dict[c]
-                    auto_save(active_id, frame_name)
-                    st.rerun()
-            with ctrl_c4:
-                opacity = st.slider("Overlay opacity", 60, 220, 60, 10,
-                                    key="overlay_opacity", label_visibility="collapsed")
-                st.caption("Opacity")
-            with ctrl_c5:
-                if missing_list:
-                    badges = " ".join(
-                        f"<span style='background:#E74C3C;color:#FFF;"
-                        f"padding:1px 7px;border-radius:4px;font-size:0.78rem;"
-                        f"margin:1px;display:inline-block'>{coord}</span>"
-                        for coord in sorted(missing_list)
-                    )
-                    st.markdown(
-                        f"<div style='line-height:2.0;padding-top:2px'>"
-                        f"<strong style='color:#E74C3C'>Missing ({len(missing_list)}):</strong> "
-                        f"{badges}</div>",
-                        unsafe_allow_html=True)
-                else:
-                    st.success("All 120 positions present!")
-
-            st.markdown("<hr style='margin:4px 0 8px'>", unsafe_allow_html=True)
-
-            # ── Build overlay image and pass geometry to JS ────────────────────
-            cur_opacity = st.session_state.get("overlay_opacity", 60)
-            overlay_img = render_overlay_on_photo(
-                photo, st.session_state.coord_dict, opacity=cur_opacity)
-
-            W_img, H_img = photo.size
-            margin_l = max(24, int(W_img * 0.038))
-            margin_t = max(20, int(H_img * 0.055))
-            grid_w   = W_img - margin_l - max(4, int(W_img * 0.008))
-            grid_h   = H_img - margin_t - max(4, int(H_img * 0.008))
-            cell_w   = grid_w / len(COLS)
-            cell_h   = grid_h / len(ROWS)
-
-            b64_img    = pil_to_b64(overlay_img, fmt="JPEG")
-            coord_json = json.dumps(
-                {c: (1 if st.session_state.coord_dict.get(c, True) else 0)
-                 for c in ALL_COORDS})
-            cols_json  = json.dumps(COLS)
-            rows_json  = json.dumps([str(r) for r in ROWS])
-            canvas_id  = f"mold_{re.sub(r'[^a-zA-Z0-9]', '_', active_id)}"
-
-            canvas_html = f"""
-<style>
-#{canvas_id}_wrap {{
-  position: relative;
-  display: block;
-  width: 100%;
-  line-height: 0;
-}}
-#{canvas_id} {{
-  width: 100%;
-  height: auto;
-  display: block;
-  border-radius: 6px;
-  cursor: crosshair;
-  box-shadow: 0 2px 16px rgba(0,0,0,0.45);
-}}
-#{canvas_id}_tip {{
-  position: fixed;
-  background: rgba(15,15,15,0.88);
-  color: #fff;
-  padding: 5px 13px;
-  border-radius: 6px;
-  font: 700 13px/1.5 Arial, sans-serif;
-  pointer-events: none;
-  display: none;
-  z-index: 9999;
-  white-space: nowrap;
-  border: 1px solid rgba(255,255,255,0.12);
-}}
-#{canvas_id}_flash {{
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  background: rgba(0,0,0,0.78);
-  color: #fff;
-  padding: 10px 24px;
-  border-radius: 10px;
-  font: 700 15px Arial, sans-serif;
-  pointer-events: none;
-  display: none;
-  z-index: 9999;
-}}
-#{canvas_id}_msg {{
-  font: 12px Arial, sans-serif;
-  color: #7F8C8D;
-  text-align: center;
-  padding: 5px 0 0;
-  min-height: 20px;
-}}
-</style>
-
-<div id="{canvas_id}_wrap">
-  <canvas id="{canvas_id}"></canvas>
-  <div id="{canvas_id}_tip"></div>
-  <div id="{canvas_id}_flash"></div>
-</div>
-<div id="{canvas_id}_msg">👆 Click any cavity on the photo to mark it missing or restore it</div>
-
-<script>
-(function() {{
-  const COLS     = {cols_json};
-  const ROWS     = {rows_json};
-  const coords   = {coord_json};
-  const marginL  = {margin_l};
-  const marginT  = {margin_t};
-  const cellW    = {cell_w};
-  const cellH    = {cell_h};
-  const IMG_W    = {W_img};
-  const IMG_H    = {H_img};
-  const CID      = "{canvas_id}";
-
-  const canvas = document.getElementById(CID);
-  const ctx    = canvas.getContext('2d');
-  const tip    = document.getElementById(CID + '_tip');
-  const flash  = document.getElementById(CID + '_flash');
-  const msg    = document.getElementById(CID + '_msg');
-
-  canvas.width  = IMG_W;
-  canvas.height = IMG_H;
-
-  const baseImg = new Image();
-  baseImg.src = 'data:image/jpeg;base64,{b64_img}';
-  baseImg.onload = () => ctx.drawImage(baseImg, 0, 0);
-
-  function getScale() {{
-    const r = canvas.getBoundingClientRect();
-    return {{ sx: IMG_W / r.width, sy: IMG_H / r.height, r }};
-  }}
-
-  function coordFromXY(x, y) {{
-    const ci = Math.floor((x - marginL) / cellW);
-    const ri = Math.floor((y - marginT) / cellH);
-    if (ci < 0 || ci >= COLS.length || ri < 0 || ri >= ROWS.length) return null;
-    return COLS[ci] + ROWS[ri];
-  }}
-
-  canvas.addEventListener('mousemove', e => {{
-    const {{ sx, sy, r }} = getScale();
-    const x = (e.clientX - r.left) * sx;
-    const y = (e.clientY - r.top)  * sy;
-    const coord = coordFromXY(x, y);
-    if (coord) {{
-      const status = coords[coord] === 1 ? '🟢 Present' : '🔴 Missing';
-      tip.textContent = coord + ' — ' + status + '  (click to toggle)';
-      tip.style.display = 'block';
-      tip.style.left = (e.clientX + 16) + 'px';
-      tip.style.top  = (e.clientY - 12) + 'px';
-    }} else {{
-      tip.style.display = 'none';
-    }}
-  }});
-  canvas.addEventListener('mouseleave', () => tip.style.display = 'none');
-
-  canvas.addEventListener('click', e => {{
-    const {{ sx, sy, r }} = getScale();
-    const x = (e.clientX - r.left) * sx;
-    const y = (e.clientY - r.top)  * sy;
-    const coord = coordFromXY(x, y);
-    if (!coord) return;
-
-    // Optimistic local toggle
-    coords[coord] = coords[coord] === 1 ? 0 : 1;
-    const nowMissing = coords[coord] === 0;
-
-    // Repaint just that cell for instant feedback
-    const ci = COLS.indexOf(coord[0]);
-    const ri = ROWS.indexOf(coord.slice(1));
-    const x0 = marginL + ci * cellW;
-    const y0 = marginT + ri * cellH;
-    ctx.drawImage(baseImg, x0, y0, cellW, cellH, x0, y0, cellW, cellH);
-    ctx.fillStyle = nowMissing
-      ? 'rgba(231,76,60,0.75)' : 'rgba(46,204,113,0.50)';
-    ctx.fillRect(x0 + 1, y0 + 1, cellW - 2, cellH - 2);
-    ctx.strokeStyle = 'rgba(255,255,255,0.75)';
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(x0 + 0.75, y0 + 0.75, cellW - 1.5, cellH - 1.5);
-
-    // Label
-    ctx.fillStyle = nowMissing ? '#fff' : 'rgba(10,10,10,0.85)';
-    ctx.font = 'bold ' + Math.max(9, Math.floor(Math.min(cellW, cellH) * 0.30)) + 'px Arial';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(coord, x0 + cellW / 2, y0 + cellH / 2);
-
-    tip.style.display = 'none';
-    msg.innerHTML = (nowMissing
-      ? '<span style="color:#E74C3C">🔴 Marked MISSING: <strong>' + coord + '</strong></span>'
-      : '<span style="color:#2ECC71">🟢 Marked PRESENT: <strong>' + coord + '</strong></span>');
-
-    // Flash confirmation
-    flash.textContent = (nowMissing ? '🔴 ' : '🟢 ') + coord;
-    flash.style.display = 'block';
-    setTimeout(() => flash.style.display = 'none', 700);
-
-    // ── Relay to Streamlit via URL query param ─────────────────────────────
-    // We append ?click=<coord> to the parent URL; Streamlit reads it
-    // via st.query_params on the next rerun, processes it, then clears it.
-    try {{
-      const url = new URL(window.parent.location.href);
-      url.searchParams.set('click', coord);
-      window.parent.history.pushState({{}}, '', url.toString());
-      // Trigger Streamlit's rerun by posting a message it recognises
-      window.parent.postMessage({{ type: 'streamlit:forceRerender' }}, '*');
-    }} catch(err) {{
-      // Cross-origin fallback: try direct DOM relay to any visible text input
-      const inputs = window.parent.document.querySelectorAll(
-        '[data-testid="stTextInput"] input');
-      if (inputs.length) {{
-        const inp = inputs[inputs.length - 1];
-        Object.getOwnPropertyDescriptor(
-          window.HTMLInputElement.prototype, 'value')
-          .set.call(inp, coord);
-        inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
-      }}
-    }}
-  }});
-}})();
-</script>
-"""
-
-            components.html(canvas_html,
-                            height=int(H_img * 820 / max(W_img, 1)) + 70,
-                            scrolling=False)
-
-            # Download button for the overlay image
-            buf = io.BytesIO()
-            overlay_img.save(buf, format="PNG")
-            st.download_button(
-                "⬇️ Download overlay image",
-                data=buf.getvalue(),
-                file_name=f"{re.sub(r'[^a-zA-Z0-9_-]','_',frame_name)}_overlay.png",
-                mime="image/png",
-            )
-
-    # ── Tab: Grid Editor ──────────────────────────────────────────────────────
-    with tab_grid:
-        st.markdown(
-            "Click a cell to toggle **Present 🟢** ↔ **Missing 🔴**. "
-            "Changes auto-save when photo inspector is active; "
-            "use **Save Frame** below otherwise.")
-
-        tb1, tb2, tb3, tb4 = st.columns(4)
-        with tb1:
-            if st.button("✅ All Present", use_container_width=True, key="g_all_pres"):
-                for c in ALL_COORDS:
-                    st.session_state.coord_dict[c] = True
-                st.session_state.dirty = True; st.rerun()
-        with tb2:
-            if st.button("❌ All Missing", use_container_width=True, key="g_all_miss"):
-                for c in ALL_COORDS:
-                    st.session_state.coord_dict[c] = False
-                st.session_state.dirty = True; st.rerun()
-        with tb3:
-            if st.button("🔄 Invert", use_container_width=True, key="g_invert"):
-                for c in ALL_COORDS:
-                    st.session_state.coord_dict[c] = not st.session_state.coord_dict[c]
-                st.session_state.dirty = True; st.rerun()
-        with tb4:
-            if st.button("💾 Save Frame", use_container_width=True,
-                         type="primary", key="g_save",
-                         disabled=not st.session_state.dirty):
-                auto_save(active_id, frame_name)
-                st.success("Saved!"); st.rerun()
-
-        hcols = st.columns([0.5] + [1]*len(COLS))
-        hcols[0].markdown("**↓**")
-        for i, lbl in enumerate(COLS):
-            hcols[i+1].markdown(
-                f"<div style='text-align:center;font-weight:700;"
-                f"color:#3498DB;font-size:0.8rem'>{lbl}</div>",
-                unsafe_allow_html=True)
-
-        for row_num in ROWS:
-            rcols = st.columns([0.5] + [1]*len(COLS))
-            rcols[0].markdown(
-                f"<div style='text-align:center;font-weight:700;"
-                f"color:#3498DB'>{row_num}</div>", unsafe_allow_html=True)
-            for ci, col_lbl in enumerate(COLS):
-                coord   = f"{col_lbl}{row_num}"
-                present = st.session_state.coord_dict.get(coord, True)
-                with rcols[ci+1]:
-                    if st.button("🟢" if present else "🔴",
-                                 key=f"grid_btn_{coord}",
-                                 help=f"{coord}: {'Present' if present else 'MISSING'}",
-                                 use_container_width=True):
-                        st.session_state.coord_dict[coord] = not present
-                        st.session_state.dirty = True; st.rerun()
-
-        if st.session_state.dirty:
-            st.warning("⚠️ Unsaved changes — click **Save Frame** above.")
-
-    # ── Tab: Quick Entry ──────────────────────────────────────────────────────
-    with tab_quick:
-        st.markdown("""
-        Paste **missing** coordinates as a comma-separated list.
-        All others are assumed **present**.
-        **Examples:** `A1, C3, O8`  or  `B2 D5 F7`
-        """)
-
-        if missing_list:
-            st.markdown(
-                f"**Currently missing ({len(missing_list)}):** " +
-                ", ".join(f"`{c}`" for c in sorted(missing_list)))
-        else:
-            st.success("All positions currently marked as present.")
-
-        with st.form("quick_entry"):
-            raw = st.text_area(
-                "Missing coordinates",
-                value=", ".join(sorted(missing_list)) if missing_list else "",
-                height=90, placeholder="e.g. A1, B3, G5, O8")
-            ca, cb = st.columns(2)
-            apply_btn = ca.form_submit_button("Apply (replace all missing)",
-                                              use_container_width=True, type="primary")
-            add_btn   = cb.form_submit_button("Add to existing missing",
-                                              use_container_width=True)
-
-        if apply_btn or add_btn:
-            tokens = re.split(r"[\s,;]+", raw.strip().upper())
-            valid, invalid = [], []
-            for t in tokens:
-                if not t: continue
-                (valid if t in ALL_COORDS else invalid).append(t)
-            if invalid:
-                st.error(f"Invalid coordinate(s): {', '.join(invalid)}")
-            else:
-                if apply_btn:
-                    for c in ALL_COORDS:
-                        st.session_state.coord_dict[c] = (c not in valid)
-                else:
-                    for c in valid:
-                        st.session_state.coord_dict[c] = False
-                auto_save(active_id, frame_name)
-                n = len([c for c, v in st.session_state.coord_dict.items() if not v])
-                st.success(f"Saved! {n} position(s) missing.")
-                st.rerun()
-
-        st.subheader("Row-by-row status")
-        status_rows = []
-        for row_num in ROWS:
-            rm = [f"{cl}{row_num}" for cl in COLS
-                  if not st.session_state.coord_dict.get(f"{cl}{row_num}", True)]
-            status_rows.append({
-                "Row": row_num,
-                "Missing": len(rm),
-                "Missing Coords": ", ".join(rm) if rm else "—",
-            })
-        st.dataframe(pd.DataFrame(status_rows), use_container_width=True, hide_index=True)
-
-    # ── Tab: Grid / Overlay Preview ───────────────────────────────────────────
-    with tab_vis:
-        if photo:
-            st.markdown("Overlay rendered on actual mold photo. 🟢 Present &nbsp; 🔴 Missing")
-            opa = st.slider("Overlay opacity", 60, 220, 60, 10, key="vis_opacity")
-            ov  = render_overlay_on_photo(photo, st.session_state.coord_dict, opacity=opa)
-            st.image(ov, use_container_width=True, caption=frame_name)
-            buf = io.BytesIO(); ov.save(buf, format="PNG")
-            st.download_button(
-                "⬇️ Download overlay (.png)", data=buf.getvalue(),
-                file_name=f"{re.sub(r'[^a-zA-Z0-9_-]','_',frame_name)}_overlay.png",
-                mime="image/png")
-        else:
-            st.markdown("Synthetic grid (upload a photo to see the real mold). "
-                        "🟢 Present &nbsp; 🔴 Missing")
-            grid_img = render_plain_grid(st.session_state.coord_dict)
-            st.image(grid_img, use_container_width=True, caption=frame_name)
-            buf = io.BytesIO(); grid_img.save(buf, format="PNG")
-            st.download_button(
-                "⬇️ Download grid (.png)", data=buf.getvalue(),
-                file_name=f"{re.sub(r'[^a-zA-Z0-9_-]','_',frame_name)}_grid.png",
-                mime="image/png")
-
-        if missing_list:
-            st.subheader(f"🔴 Missing positions ({len(missing_list)})")
-            rows_of_missing = {}
-            for c in sorted(missing_list):
-                rows_of_missing.setdefault(c[1:], []).append(c)
-            for rn, coords in sorted(rows_of_missing.items(), key=lambda x: int(x[0])):
-                st.markdown(
-                    f"**Row {rn}:** " +
-                    " ".join(
-                        f"<span style='background:#E74C3C;color:#FFF;"
-                        f"padding:2px 6px;border-radius:4px;font-size:0.85rem'>{c}</span>"
-                        for c in coords),
-                    unsafe_allow_html=True)
-        else:
-            st.success("🎉 All 120 positions are present!")
-
-    # ── Bottom navigation (Next Frame button) ──────────────────────────────────
-    st.divider()
-    bot_left, bot_mid, bot_right = st.columns([1, 2, 1])
-    with bot_left:
-        if st.button("◀ Previous Frame", use_container_width=True,
-                     disabled=(total_frames <= 1)):
+        nav1, nav2 = st.columns(2)
+        if nav1.button("⬅️ Prev", use_container_width=True):
             navigate_to_adjacent_frame(-1)
             st.rerun()
-    with bot_mid:
-        st.markdown(
-            f"<div style='text-align:center;color:#95A5A6;padding-top:8px'>"
-            f"Frame <strong>{current_idx + 1}</strong> of <strong>{total_frames}</strong></div>",
-            unsafe_allow_html=True)
-    with bot_right:
-        if st.button("Next Frame ▶", use_container_width=True,
-                     disabled=(total_frames <= 1),
-                     type="primary"):
-            navigate_to_adjacent_frame(+1)
+        if nav2.button("Next ➡️", use_container_width=True):
+            navigate_to_adjacent_frame(1)
             st.rerun()
 
+    # ── Frame Stats ────────────────────────────────────────────────────────────
+    c1, c2, c3 = st.columns(3)
+    c1.markdown(f"<div class='stat-box'><div class='stat-number green'>{present_count}</div><div class='stat-label'>Present</div></div>", unsafe_allow_html=True)
+    c2.markdown(f"<div class='stat-box'><div class='stat-number red'>{len(missing_list)}</div><div class='stat-label'>Missing</div></div>", unsafe_allow_html=True)
+    c3.markdown(f"<div class='stat-box'><div class='stat-number'>{len(ALL_COORDS)}</div><div class='stat-label'>Total</div></div>", unsafe_allow_html=True)
+
+    # ── Photo Inspector & Save Button ──────────────────────────────────────────
+    st.markdown("### 🔍 Photo Inspector")
+    if photo:
+        # Opacity defaults to 102 (40%) inside this function now
+        img_out = render_overlay_on_photo(photo, coord_dict)
+        st.image(img_out, use_container_width=True)
+    else:
+        img_out = render_plain_grid(coord_dict)
+        st.image(img_out, use_container_width=False)
+
+    # User-requested Save Button
+    if st.button("💾 Save Selections", use_container_width=True, type="primary"):
+        auto_save(active_id, frame_name, image_path)
+        st.success("Selections saved successfully!")
+
+    # ── Manual Grid Toggles (Fallback/Alternative Click Mechanism) ─────────────
+    st.markdown("### 🎛️ Toggle Coordinates Manually")
+    for r in ROWS:
+        cols = st.columns(len(COLS))
+        for ci, c in enumerate(COLS):
+            coord = f"{c}{r}"
+            is_present = coord_dict.get(coord, True)
+            
+            # Simple button grid to handle clicks if an interactive image component isn't used
+            if cols[ci].button(f"{coord}", key=f"btn_{coord}", type="primary" if is_present else "secondary", use_container_width=True):
+                st.session_state.coord_dict[coord] = not is_present
+                st.session_state.dirty = True
+                st.rerun()
 
 if __name__ == "__main__":
     main()
