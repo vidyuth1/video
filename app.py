@@ -852,8 +852,18 @@ def main():
     # ── Tab: Photo Inspector ───────────────────────────────────────────────────
     if tab_photo and photo:
         with tab_photo:
-            # ── Top strip: bulk actions + opacity + missing badges ─────────────
-            ctrl_c1, ctrl_c2, ctrl_c3, ctrl_c4, ctrl_c5 = st.columns([1, 1, 1, 1, 2])
+            # ── Process any pending canvas click from query params ─────────────
+            qp = st.query_params
+            pending_click = qp.get("click", "")
+            if pending_click and pending_click in ALL_COORDS:
+                st.session_state.coord_dict[pending_click] = \
+                    not st.session_state.coord_dict.get(pending_click, True)
+                auto_save(active_id, frame_name)
+                st.query_params.clear()
+                st.rerun()
+
+            # ── Top control strip ─────────────────────────────────────────────
+            ctrl_c1, ctrl_c2, ctrl_c3, ctrl_c4, ctrl_c5 = st.columns([1, 1, 1, 1, 3])
             with ctrl_c1:
                 if st.button("✅ All Present", use_container_width=True, key="pi_all_pres"):
                     for c in ALL_COORDS:
@@ -880,74 +890,235 @@ def main():
                 if missing_list:
                     badges = " ".join(
                         f"<span style='background:#E74C3C;color:#FFF;"
-                        f"padding:1px 6px;border-radius:4px;font-size:0.78rem;"
+                        f"padding:1px 7px;border-radius:4px;font-size:0.78rem;"
                         f"margin:1px;display:inline-block'>{coord}</span>"
                         for coord in sorted(missing_list)
                     )
                     st.markdown(
-                        f"<div style='line-height:1.9;padding-top:4px'>"
+                        f"<div style='line-height:2.0;padding-top:2px'>"
                         f"<strong style='color:#E74C3C'>Missing ({len(missing_list)}):</strong> "
                         f"{badges}</div>",
                         unsafe_allow_html=True)
                 else:
                     st.success("All 120 positions present!")
 
-            st.markdown("<hr style='margin:6px 0 10px'>", unsafe_allow_html=True)
+            st.markdown("<hr style='margin:4px 0 8px'>", unsafe_allow_html=True)
 
-            # ── Main split: photo LEFT, coordinate grid RIGHT ─────────────────
-            photo_col, grid_col = st.columns([5, 4])
+            # ── Build overlay image and pass geometry to JS ────────────────────
+            cur_opacity = st.session_state.get("overlay_opacity", 60)
+            overlay_img = render_overlay_on_photo(
+                photo, st.session_state.coord_dict, opacity=cur_opacity)
 
-            with photo_col:
-                overlay_img = render_overlay_on_photo(
-                    photo, st.session_state.coord_dict,
-                    opacity=st.session_state.get("overlay_opacity", 60))
-                st.image(overlay_img, use_container_width=True, caption=frame_name)
+            W_img, H_img = photo.size
+            margin_l = max(24, int(W_img * 0.038))
+            margin_t = max(20, int(H_img * 0.055))
+            grid_w   = W_img - margin_l - max(4, int(W_img * 0.008))
+            grid_h   = H_img - margin_t - max(4, int(H_img * 0.008))
+            cell_w   = grid_w / len(COLS)
+            cell_h   = grid_h / len(ROWS)
 
-                buf = io.BytesIO()
-                overlay_img.save(buf, format="PNG")
-                st.download_button(
-                    "⬇️ Download overlay image",
-                    data=buf.getvalue(),
-                    file_name=f"{re.sub(r'[^a-zA-Z0-9_-]','_',frame_name)}_overlay.png",
-                    mime="image/png",
-                )
+            b64_img    = pil_to_b64(overlay_img, fmt="JPEG")
+            coord_json = json.dumps(
+                {c: (1 if st.session_state.coord_dict.get(c, True) else 0)
+                 for c in ALL_COORDS})
+            cols_json  = json.dumps(COLS)
+            rows_json  = json.dumps([str(r) for r in ROWS])
+            canvas_id  = f"mold_{re.sub(r'[^a-zA-Z0-9]', '_', active_id)}"
 
-            with grid_col:
-                # Column letter headers
-                st.markdown(
-                    "<div style='font-size:0.72rem;color:#95A5A6;margin-bottom:2px'>"
-                    "Click a cell to toggle Present 🟢 / Missing 🔴</div>",
-                    unsafe_allow_html=True)
+            canvas_html = f"""
+<style>
+#{canvas_id}_wrap {{
+  position: relative;
+  display: block;
+  width: 100%;
+  line-height: 0;
+}}
+#{canvas_id} {{
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 6px;
+  cursor: crosshair;
+  box-shadow: 0 2px 16px rgba(0,0,0,0.45);
+}}
+#{canvas_id}_tip {{
+  position: fixed;
+  background: rgba(15,15,15,0.88);
+  color: #fff;
+  padding: 5px 13px;
+  border-radius: 6px;
+  font: 700 13px/1.5 Arial, sans-serif;
+  pointer-events: none;
+  display: none;
+  z-index: 9999;
+  white-space: nowrap;
+  border: 1px solid rgba(255,255,255,0.12);
+}}
+#{canvas_id}_flash {{
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(0,0,0,0.78);
+  color: #fff;
+  padding: 10px 24px;
+  border-radius: 10px;
+  font: 700 15px Arial, sans-serif;
+  pointer-events: none;
+  display: none;
+  z-index: 9999;
+}}
+#{canvas_id}_msg {{
+  font: 12px Arial, sans-serif;
+  color: #7F8C8D;
+  text-align: center;
+  padding: 5px 0 0;
+  min-height: 20px;
+}}
+</style>
 
-                hdr_cols = st.columns([0.38] + [1]*len(COLS))
-                hdr_cols[0].markdown(
-                    "<div style='text-align:center;font-size:0.65rem;color:#3498DB'> </div>",
-                    unsafe_allow_html=True)
-                for i, lbl in enumerate(COLS):
-                    hdr_cols[i+1].markdown(
-                        f"<div style='text-align:center;font-weight:700;"
-                        f"color:#3498DB;font-size:0.7rem;line-height:1'>{lbl}</div>",
-                        unsafe_allow_html=True)
+<div id="{canvas_id}_wrap">
+  <canvas id="{canvas_id}"></canvas>
+  <div id="{canvas_id}_tip"></div>
+  <div id="{canvas_id}_flash"></div>
+</div>
+<div id="{canvas_id}_msg">👆 Click any cavity on the photo to mark it missing or restore it</div>
 
-                for row_num in ROWS:
-                    row_cols = st.columns([0.38] + [1]*len(COLS))
-                    row_cols[0].markdown(
-                        f"<div style='text-align:center;font-weight:700;"
-                        f"color:#3498DB;font-size:0.72rem;padding-top:4px'>{row_num}</div>",
-                        unsafe_allow_html=True)
-                    for ci, col_lbl in enumerate(COLS):
-                        coord   = f"{col_lbl}{row_num}"
-                        present = st.session_state.coord_dict.get(coord, True)
-                        with row_cols[ci+1]:
-                            if st.button(
-                                "🟢" if present else "🔴",
-                                key=f"photo_btn_{coord}",
-                                help=f"{coord}: {'Present — click to mark missing' if present else 'MISSING — click to restore'}",
-                                use_container_width=True,
-                            ):
-                                st.session_state.coord_dict[coord] = not present
-                                auto_save(active_id, frame_name)
-                                st.rerun()
+<script>
+(function() {{
+  const COLS     = {cols_json};
+  const ROWS     = {rows_json};
+  const coords   = {coord_json};
+  const marginL  = {margin_l};
+  const marginT  = {margin_t};
+  const cellW    = {cell_w};
+  const cellH    = {cell_h};
+  const IMG_W    = {W_img};
+  const IMG_H    = {H_img};
+  const CID      = "{canvas_id}";
+
+  const canvas = document.getElementById(CID);
+  const ctx    = canvas.getContext('2d');
+  const tip    = document.getElementById(CID + '_tip');
+  const flash  = document.getElementById(CID + '_flash');
+  const msg    = document.getElementById(CID + '_msg');
+
+  canvas.width  = IMG_W;
+  canvas.height = IMG_H;
+
+  const baseImg = new Image();
+  baseImg.src = 'data:image/jpeg;base64,{b64_img}';
+  baseImg.onload = () => ctx.drawImage(baseImg, 0, 0);
+
+  function getScale() {{
+    const r = canvas.getBoundingClientRect();
+    return {{ sx: IMG_W / r.width, sy: IMG_H / r.height, r }};
+  }}
+
+  function coordFromXY(x, y) {{
+    const ci = Math.floor((x - marginL) / cellW);
+    const ri = Math.floor((y - marginT) / cellH);
+    if (ci < 0 || ci >= COLS.length || ri < 0 || ri >= ROWS.length) return null;
+    return COLS[ci] + ROWS[ri];
+  }}
+
+  canvas.addEventListener('mousemove', e => {{
+    const {{ sx, sy, r }} = getScale();
+    const x = (e.clientX - r.left) * sx;
+    const y = (e.clientY - r.top)  * sy;
+    const coord = coordFromXY(x, y);
+    if (coord) {{
+      const status = coords[coord] === 1 ? '🟢 Present' : '🔴 Missing';
+      tip.textContent = coord + ' — ' + status + '  (click to toggle)';
+      tip.style.display = 'block';
+      tip.style.left = (e.clientX + 16) + 'px';
+      tip.style.top  = (e.clientY - 12) + 'px';
+    }} else {{
+      tip.style.display = 'none';
+    }}
+  }});
+  canvas.addEventListener('mouseleave', () => tip.style.display = 'none');
+
+  canvas.addEventListener('click', e => {{
+    const {{ sx, sy, r }} = getScale();
+    const x = (e.clientX - r.left) * sx;
+    const y = (e.clientY - r.top)  * sy;
+    const coord = coordFromXY(x, y);
+    if (!coord) return;
+
+    // Optimistic local toggle
+    coords[coord] = coords[coord] === 1 ? 0 : 1;
+    const nowMissing = coords[coord] === 0;
+
+    // Repaint just that cell for instant feedback
+    const ci = COLS.indexOf(coord[0]);
+    const ri = ROWS.indexOf(coord.slice(1));
+    const x0 = marginL + ci * cellW;
+    const y0 = marginT + ri * cellH;
+    ctx.drawImage(baseImg, x0, y0, cellW, cellH, x0, y0, cellW, cellH);
+    ctx.fillStyle = nowMissing
+      ? 'rgba(231,76,60,0.75)' : 'rgba(46,204,113,0.50)';
+    ctx.fillRect(x0 + 1, y0 + 1, cellW - 2, cellH - 2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x0 + 0.75, y0 + 0.75, cellW - 1.5, cellH - 1.5);
+
+    // Label
+    ctx.fillStyle = nowMissing ? '#fff' : 'rgba(10,10,10,0.85)';
+    ctx.font = 'bold ' + Math.max(9, Math.floor(Math.min(cellW, cellH) * 0.30)) + 'px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(coord, x0 + cellW / 2, y0 + cellH / 2);
+
+    tip.style.display = 'none';
+    msg.innerHTML = (nowMissing
+      ? '<span style="color:#E74C3C">🔴 Marked MISSING: <strong>' + coord + '</strong></span>'
+      : '<span style="color:#2ECC71">🟢 Marked PRESENT: <strong>' + coord + '</strong></span>');
+
+    // Flash confirmation
+    flash.textContent = (nowMissing ? '🔴 ' : '🟢 ') + coord;
+    flash.style.display = 'block';
+    setTimeout(() => flash.style.display = 'none', 700);
+
+    // ── Relay to Streamlit via URL query param ─────────────────────────────
+    // We append ?click=<coord> to the parent URL; Streamlit reads it
+    // via st.query_params on the next rerun, processes it, then clears it.
+    try {{
+      const url = new URL(window.parent.location.href);
+      url.searchParams.set('click', coord);
+      window.parent.history.pushState({{}}, '', url.toString());
+      // Trigger Streamlit's rerun by posting a message it recognises
+      window.parent.postMessage({{ type: 'streamlit:forceRerender' }}, '*');
+    }} catch(err) {{
+      // Cross-origin fallback: try direct DOM relay to any visible text input
+      const inputs = window.parent.document.querySelectorAll(
+        '[data-testid="stTextInput"] input');
+      if (inputs.length) {{
+        const inp = inputs[inputs.length - 1];
+        Object.getOwnPropertyDescriptor(
+          window.HTMLInputElement.prototype, 'value')
+          .set.call(inp, coord);
+        inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
+      }}
+    }}
+  }});
+}})();
+</script>
+"""
+
+            components.html(canvas_html,
+                            height=int(H_img * 820 / max(W_img, 1)) + 70,
+                            scrolling=False)
+
+            # Download button for the overlay image
+            buf = io.BytesIO()
+            overlay_img.save(buf, format="PNG")
+            st.download_button(
+                "⬇️ Download overlay image",
+                data=buf.getvalue(),
+                file_name=f"{re.sub(r'[^a-zA-Z0-9_-]','_',frame_name)}_overlay.png",
+                mime="image/png",
+            )
 
     # ── Tab: Grid Editor ──────────────────────────────────────────────────────
     with tab_grid:
