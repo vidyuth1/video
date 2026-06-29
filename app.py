@@ -420,6 +420,81 @@ def build_cumulative_heatmap_workbook(df: pd.DataFrame) -> bytes:
         ws_sum.cell(total_data_row, ci).alignment = center
     ws_sum.row_dimensions[total_data_row].height = 22
 
+    # ── Coordinate Frequency tab ───────────────────────────────────────────────
+    ws_freq = wb.create_sheet(title="Coordinate Frequency", index=2)
+
+    freq_headers = ["Coordinate", "Times Missing", "Total Frames", "% Flagged", "Rank"]
+    ws_freq.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(freq_headers))
+    freq_title = ws_freq.cell(1, 1,
+        f"Coordinate Flag Frequency  —  {total_frames} frame(s) analysed")
+    freq_title.font      = Font(bold=True, color="FFFFFFFF", name="Arial", size=13)
+    freq_title.fill      = header_fill
+    freq_title.alignment = center
+    ws_freq.row_dimensions[1].height = 30
+
+    for ci, h in enumerate(freq_headers, 1):
+        c = ws_freq.cell(2, ci, h)
+        c.font = white_bold; c.fill = summary_fill
+        c.alignment = center; c.border = border
+    ws_freq.row_dimensions[2].height = 22
+
+    # Column widths
+    for ci, w in enumerate([14, 16, 14, 12, 8], 1):
+        ws_freq.column_dimensions[get_column_letter(ci)].width = w
+
+    # Sort coordinates by missing count descending, then by coord name for ties
+    sorted_coords = sorted(
+        ALL_COORDS,
+        key=lambda coord: (-missing_counts.get(coord, 0), coord)
+    )
+
+    for rank, coord in enumerate(sorted_coords, start=1):
+        excel_row = rank + 2
+        count     = missing_counts.get(coord, 0)
+        pct       = count / total_frames if total_frames > 0 else 0.0
+
+        # Color the % Flagged cell: green→red based on percentage
+        argb = _interpolate_color(count, max_missing if max_missing > 0 else 1)
+        flag_fill = PatternFill("solid", fgColor=argb)
+        t_val = count / max_missing if max_missing > 0 else 0
+        flag_font = Font(name="Arial", size=10,
+                         color="FFFFFFFF" if t_val > 0.45 else "FF000000",
+                         bold=(count > 0))
+
+        vals = [coord, count, total_frames, pct, rank]
+        for ci, val in enumerate(vals, 1):
+            cell = ws_freq.cell(excel_row, ci, val)
+            cell.alignment = center
+            cell.border    = border
+            cell.font      = Font(name="Arial", size=10)
+
+            if ci == 4:   # % Flagged column — colour-coded
+                cell.number_format = "0.0%"
+                cell.fill = flag_fill
+                cell.font = flag_font
+            elif ci == 2 and count > 0:  # Times Missing — subtle red tint when non-zero
+                intensity = min(count / total_frames, 1.0)
+                r_v = int(231 * intensity + 236 * (1 - intensity))
+                g_v = int(76  * intensity + 240 * (1 - intensity))
+                b_v = int(60  * intensity + 241 * (1 - intensity))
+                cell.fill = PatternFill("solid", fgColor=f"FF{r_v:02X}{g_v:02X}{b_v:02X}")
+
+        ws_freq.row_dimensions[excel_row].height = 18
+
+    # Totals / summary footer
+    footer_row = len(ALL_COORDS) + 3
+    ws_freq.merge_cells(start_row=footer_row, start_column=1,
+                        end_row=footer_row, end_column=len(freq_headers))
+    total_missing_events = sum(missing_counts.values())
+    avg_missing_per_frame = total_missing_events / total_frames if total_frames > 0 else 0
+    foot = ws_freq.cell(footer_row, 1,
+        f"Total missing events across all frames: {total_missing_events}   |   "
+        f"Avg missing positions per frame: {avg_missing_per_frame:.1f} / {len(ALL_COORDS)}   |   "
+        f"Coordinates never flagged: {sum(1 for v in missing_counts.values() if v == 0)}")
+    foot.font      = Font(italic=True, name="Arial", size=9, color="FF555555")
+    foot.alignment = Alignment(horizontal="left", vertical="center")
+    ws_freq.row_dimensions[footer_row].height = 18
+
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -777,53 +852,52 @@ def main():
     # ── Tab: Photo Inspector ───────────────────────────────────────────────────
     if tab_photo and photo:
         with tab_photo:
-            st.markdown(
-                "The mold photo is shown below with a **semi-transparent grid overlay**. "
-                "Click any coordinate button in the map to toggle it missing or present.")
-
-            left_col, right_col = st.columns([3, 1])
-
-            with right_col:
-                st.markdown("#### 🔁 Bulk Actions")
+            # ── Top strip: bulk actions + opacity + missing badges ─────────────
+            ctrl_c1, ctrl_c2, ctrl_c3, ctrl_c4, ctrl_c5 = st.columns([1, 1, 1, 1, 2])
+            with ctrl_c1:
                 if st.button("✅ All Present", use_container_width=True, key="pi_all_pres"):
                     for c in ALL_COORDS:
                         st.session_state.coord_dict[c] = True
                     auto_save(active_id, frame_name)
                     st.rerun()
+            with ctrl_c2:
                 if st.button("❌ All Missing", use_container_width=True, key="pi_all_miss"):
                     for c in ALL_COORDS:
                         st.session_state.coord_dict[c] = False
                     auto_save(active_id, frame_name)
                     st.rerun()
+            with ctrl_c3:
                 if st.button("🔄 Invert", use_container_width=True, key="pi_invert"):
                     for c in ALL_COORDS:
                         st.session_state.coord_dict[c] = not st.session_state.coord_dict[c]
                     auto_save(active_id, frame_name)
                     st.rerun()
-
-                st.divider()
-                st.markdown("#### 🔴 Missing list")
-                if missing_list:
-                    for coord in sorted(missing_list):
-                        c1, c2 = st.columns([2, 1])
-                        c1.markdown(
-                            f"<span style='background:#E74C3C;color:#FFF;"
-                            f"padding:2px 8px;border-radius:4px;"
-                            f"font-size:0.9rem'>{coord}</span>",
-                            unsafe_allow_html=True)
-                        if c2.button("✓", key=f"restore_{coord}",
-                                     help=f"Mark {coord} present"):
-                            st.session_state.coord_dict[coord] = True
-                            auto_save(active_id, frame_name)
-                            st.rerun()
-                else:
-                    st.success("All present!")
-
-                st.divider()
+            with ctrl_c4:
                 opacity = st.slider("Overlay opacity", 60, 220, 60, 10,
-                                    key="overlay_opacity")
+                                    key="overlay_opacity", label_visibility="collapsed")
+                st.caption("Opacity")
+            with ctrl_c5:
+                if missing_list:
+                    badges = " ".join(
+                        f"<span style='background:#E74C3C;color:#FFF;"
+                        f"padding:1px 6px;border-radius:4px;font-size:0.78rem;"
+                        f"margin:1px;display:inline-block'>{coord}</span>"
+                        for coord in sorted(missing_list)
+                    )
+                    st.markdown(
+                        f"<div style='line-height:1.9;padding-top:4px'>"
+                        f"<strong style='color:#E74C3C'>Missing ({len(missing_list)}):</strong> "
+                        f"{badges}</div>",
+                        unsafe_allow_html=True)
+                else:
+                    st.success("All 120 positions present!")
 
-            with left_col:
+            st.markdown("<hr style='margin:6px 0 10px'>", unsafe_allow_html=True)
+
+            # ── Main split: photo LEFT, coordinate grid RIGHT ─────────────────
+            photo_col, grid_col = st.columns([5, 4])
+
+            with photo_col:
                 overlay_img = render_overlay_on_photo(
                     photo, st.session_state.coord_dict,
                     opacity=st.session_state.get("overlay_opacity", 60))
@@ -838,21 +912,28 @@ def main():
                     mime="image/png",
                 )
 
-                # ── Coordinate map (click to toggle) ──────────────────────────
-                st.markdown("#### Coordinate map — click to toggle")
-                col_headers = st.columns([0.4] + [1]*len(COLS))
-                col_headers[0].markdown("**Row**")
-                for i, c in enumerate(COLS):
-                    col_headers[i+1].markdown(
+            with grid_col:
+                # Column letter headers
+                st.markdown(
+                    "<div style='font-size:0.72rem;color:#95A5A6;margin-bottom:2px'>"
+                    "Click a cell to toggle Present 🟢 / Missing 🔴</div>",
+                    unsafe_allow_html=True)
+
+                hdr_cols = st.columns([0.38] + [1]*len(COLS))
+                hdr_cols[0].markdown(
+                    "<div style='text-align:center;font-size:0.65rem;color:#3498DB'> </div>",
+                    unsafe_allow_html=True)
+                for i, lbl in enumerate(COLS):
+                    hdr_cols[i+1].markdown(
                         f"<div style='text-align:center;font-weight:700;"
-                        f"color:#3498DB;font-size:0.75rem'>{c}</div>",
+                        f"color:#3498DB;font-size:0.7rem;line-height:1'>{lbl}</div>",
                         unsafe_allow_html=True)
 
                 for row_num in ROWS:
-                    row_cols = st.columns([0.4] + [1]*len(COLS))
+                    row_cols = st.columns([0.38] + [1]*len(COLS))
                     row_cols[0].markdown(
                         f"<div style='text-align:center;font-weight:700;"
-                        f"color:#3498DB;font-size:0.75rem'>{row_num}</div>",
+                        f"color:#3498DB;font-size:0.72rem;padding-top:4px'>{row_num}</div>",
                         unsafe_allow_html=True)
                     for ci, col_lbl in enumerate(COLS):
                         coord   = f"{col_lbl}{row_num}"
