@@ -22,31 +22,25 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from PIL import Image, ImageDraw, ImageFont
 
-# ReportLab imports for PDF export
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import mm, cm
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.units import mm
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak,
-    HRFlowable,
 )
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-COLS       = list("ABCDEFGHIJKLMNO")          # 15 columns  (A–O)
-ROWS       = list(range(1, 9))                 # 8 rows       (1–8)
+COLS       = list("ABCDEFGHIJKLMNO")
+ROWS       = list(range(1, 9))
 ALL_COORDS = [f"{c}{r}" for r in ROWS for c in COLS]
 
 DATA_FILE        = "mold_data.csv"
 IMAGES_DIR       = "frame_images"
 MAX_UPLOAD_FILES = 50
 
-PALETTE = {
-    "present":  "#2ECC71",
-    "empty":    "#E74C3C",
-    "selected": "#F39C12",
-}
+PALETTE = {"present": "#2ECC71", "empty": "#E74C3C", "selected": "#F39C12"}
 
 os.makedirs(IMAGES_DIR, exist_ok=True)
 
@@ -106,9 +100,24 @@ def load_frame_image(image_path: str):
     return None
 
 
+# ── Auto-save: immediately persist coord_dict to CSV ──────────────────────────
+# This is the ONLY save path used in the Photo Inspector tab.
+# It writes directly to disk so switching tabs never loses data.
+
+def auto_save(frame_id: str, frame_name: str):
+    """Persist current coord_dict to the DataFrame and CSV immediately."""
+    row = st.session_state.df[st.session_state.df["frame_id"] == frame_id]
+    image_path = str(row.iloc[0].get("image_path", "")) if not row.empty else ""
+    st.session_state.df = upsert_frame(
+        st.session_state.df, frame_id, frame_name,
+        st.session_state.coord_dict, image_path)
+    save_data(st.session_state.df)
+    st.session_state.dirty = False
+
+
 # ── Image helpers ──────────────────────────────────────────────────────────────
 
-def pil_to_b64(img: Image.Image, fmt="PNG") -> str:
+def pil_to_b64(img: Image.Image, fmt="JPEG") -> str:
     buf = io.BytesIO()
     img.save(buf, format=fmt)
     return base64.b64encode(buf.getvalue()).decode()
@@ -116,10 +125,8 @@ def pil_to_b64(img: Image.Image, fmt="PNG") -> str:
 
 def render_overlay_on_photo(photo: Image.Image, coord_dict: dict,
                              opacity: int = 40) -> Image.Image:
-    """Draw a semi-transparent 15×8 grid overlay on the mold photo."""
     base = photo.convert("RGBA")
     W, H = base.size
-
     margin_l = max(24, int(W * 0.038))
     margin_t = max(20, int(H * 0.055))
     grid_w   = W - margin_l - max(4, int(W * 0.008))
@@ -148,7 +155,6 @@ def render_overlay_on_photo(photo: Image.Image, coord_dict: dict,
             y0 = margin_t + ri * cell_h
             x1 = x0 + cell_w
             y1 = y0 + cell_h
-            # Both present and missing use the same opacity value
             fill = (46, 204, 113, opacity) if present else (231, 76, 60, opacity)
             draw.rectangle([x0 + 1, y0 + 1, x1 - 1, y1 - 1], fill=fill)
             draw.rectangle([x0, y0, x1, y1], outline=(255, 255, 255, 180), width=1)
@@ -184,8 +190,7 @@ def render_plain_grid(coord_dict: dict,
 
     for ci, col in enumerate(COLS):
         x = label_px + ci * cell_px + cell_px // 2
-        draw.text((x, label_px // 2), col, fill="#ECF0F1",
-                  font=fnt_lbl, anchor="mm")
+        draw.text((x, label_px // 2), col, fill="#ECF0F1", font=fnt_lbl, anchor="mm")
 
     for ri, row in enumerate(ROWS):
         y_top = label_px + ri * cell_px
@@ -212,10 +217,7 @@ def _hex_to_argb(hex_color: str) -> str:
 
 
 def _interpolate_color(count: int, max_count: int) -> str:
-    if max_count == 0:
-        t = 0.0
-    else:
-        t = min(count / max_count, 1.0)
+    t = min(count / max_count, 1.0) if max_count > 0 else 0.0
     r = int(46  + (231 - 46)  * t)
     g = int(204 + (76  - 204) * t)
     b = int(113 + (60  - 113) * t)
@@ -225,10 +227,8 @@ def _interpolate_color(count: int, max_count: int) -> str:
 def _compute_missing_counts(df: pd.DataFrame) -> dict:
     counts = {}
     for coord in ALL_COORDS:
-        if coord in df.columns:
-            counts[coord] = int((df[coord].astype(str) == "0").sum())
-        else:
-            counts[coord] = 0
+        counts[coord] = int((df[coord].astype(str) == "0").sum()) \
+            if coord in df.columns else 0
     return counts
 
 
@@ -246,11 +246,11 @@ def build_cumulative_heatmap_workbook(df: pd.DataFrame) -> bytes:
     cell_font    = Font(name="Arial", size=10)
     cell_font_wh = Font(name="Arial", size=10, color="FFFFFFFF")
 
-    total_frames  = len(df)
+    total_frames   = len(df)
     missing_counts = _compute_missing_counts(df)
-    max_missing   = max(missing_counts.values()) if missing_counts else 1
+    max_missing    = max(missing_counts.values()) if missing_counts else 1
 
-    # ── Sheet 1: Cumulative Heatmap ────────────────────────────────────────────
+    # Sheet 1: Cumulative Heatmap
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(COLS) + 2)
     tc = ws.cell(1, 1,
         f"Chocolate Mold — Cumulative Missing Count  ({total_frames} frame(s) inspected)")
@@ -323,13 +323,12 @@ def build_cumulative_heatmap_workbook(df: pd.DataFrame) -> bytes:
                    end_row=legend_row, end_column=len(COLS) + 2)
     leg = ws.cell(legend_row, 1,
         f"Each cell = number of frames where that cavity was missing  |  "
-        f"Green = never missing  to  Red = missing in all {total_frames} frame(s)  |  "
-        f"Total inspected: {total_frames} frames, {len(ALL_COORDS)} positions each")
+        f"Green = never missing  to  Red = missing in all {total_frames} frame(s)")
     leg.font = Font(italic=True, name="Arial", size=9, color="FF555555")
     leg.alignment = Alignment(horizontal="left", vertical="center")
     ws.row_dimensions[legend_row].height = 18
 
-    # ── Sheet 2: Frame Summary ─────────────────────────────────────────────────
+    # Sheet 2: Frame Summary
     ws_sum = wb.create_sheet(title="Frame Summary", index=1)
     sum_headers = ["Frame", "Missing", "Present", "Total", "% Present", "Timestamp"]
     ws_sum.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(sum_headers))
@@ -384,7 +383,7 @@ def build_cumulative_heatmap_workbook(df: pd.DataFrame) -> bytes:
         ws_sum.cell(tdr, ci).alignment = center
     ws_sum.row_dimensions[tdr].height = 22
 
-    # ── Sheet 3: Coordinate Frequency ─────────────────────────────────────────
+    # Sheet 3: Coordinate Frequency
     ws_freq = wb.create_sheet(title="Coordinate Frequency", index=2)
     freq_headers = ["Coordinate", "Times Missing", "Total Frames", "% Flagged", "Rank"]
     ws_freq.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(freq_headers))
@@ -404,7 +403,7 @@ def build_cumulative_heatmap_workbook(df: pd.DataFrame) -> bytes:
     sorted_coords = sorted(ALL_COORDS,
                            key=lambda coord: (-missing_counts.get(coord, 0), coord))
     for rank, coord in enumerate(sorted_coords, start=1):
-        er2 = rank + 2
+        er2   = rank + 2
         count = missing_counts.get(coord, 0)
         pct   = count / total_frames if total_frames > 0 else 0.0
         argb2 = _interpolate_color(count, max_missing if max_missing > 0 else 1)
@@ -449,7 +448,6 @@ def build_cumulative_heatmap_workbook(df: pd.DataFrame) -> bytes:
 # ── PDF export ─────────────────────────────────────────────────────────────────
 
 def _rl_color(hex6: str):
-    """Convert '#RRGGBB' to a ReportLab Color."""
     h = hex6.lstrip("#")
     return colors.Color(int(h[0:2], 16) / 255,
                         int(h[2:4], 16) / 255,
@@ -457,52 +455,29 @@ def _rl_color(hex6: str):
 
 
 def _interp_rl_color(count: int, max_count: int):
-    if max_count == 0:
-        t = 0.0
-    else:
-        t = min(count / max_count, 1.0)
-    r = (46  + (231 - 46)  * t) / 255
-    g = (204 + (76  - 204) * t) / 255
-    b = (113 + (60  - 113) * t) / 255
-    return colors.Color(r, g, b)
+    t = min(count / max_count, 1.0) if max_count > 0 else 0.0
+    return colors.Color(
+        (46  + (231 - 46)  * t) / 255,
+        (204 + (76  - 204) * t) / 255,
+        (113 + (60  - 113) * t) / 255)
 
 
 def build_cumulative_heatmap_pdf(df: pd.DataFrame) -> bytes:
-    """
-    Generate a multi-page PDF report matching the Excel export:
-      Page 1  — Cumulative heatmap grid (landscape A4)
-      Page 2  — Frame summary table
-      Page 3  — Coordinate frequency table
-    """
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
-        buf,
-        pagesize=landscape(A4),
-        leftMargin=15 * mm,
-        rightMargin=15 * mm,
-        topMargin=15 * mm,
-        bottomMargin=15 * mm,
-        title="Chocolate Mold Inspection Report",
-        author="Mold Inspector",
-    )
+        buf, pagesize=landscape(A4),
+        leftMargin=15*mm, rightMargin=15*mm,
+        topMargin=15*mm, bottomMargin=15*mm,
+        title="Chocolate Mold Inspection Report")
 
-    # ── Shared styles ──────────────────────────────────────────────────────────
     COL_DARK  = _rl_color("#2C3E50")
     COL_MID   = _rl_color("#34495E")
-    COL_LIGHT = _rl_color("#ECF0F1")
-    COL_GREEN = _rl_color("#2ECC71")
-    COL_RED   = _rl_color("#E74C3C")
     WHITE     = colors.white
     BLACK     = colors.black
 
-    base_style = ParagraphStyle(
-        "base", fontName="Helvetica", fontSize=9, leading=13, textColor=BLACK)
     title_style = ParagraphStyle(
         "title", fontName="Helvetica-Bold", fontSize=14,
         leading=18, textColor=WHITE, alignment=TA_CENTER)
-    h2_style = ParagraphStyle(
-        "h2", fontName="Helvetica-Bold", fontSize=11,
-        leading=15, textColor=COL_DARK, spaceAfter=4)
     caption_style = ParagraphStyle(
         "caption", fontName="Helvetica-Oblique", fontSize=7,
         leading=10, textColor=colors.HexColor("#555555"))
@@ -514,150 +489,99 @@ def build_cumulative_heatmap_pdf(df: pd.DataFrame) -> bytes:
 
     story = []
 
-    # ════════════════════════════════════════════════════════════════════════════
-    # PAGE 1 — Cumulative Heatmap Grid
-    # ════════════════════════════════════════════════════════════════════════════
+    def _hdr_para(txt, size=9):
+        return Paragraph(f"<b>{txt}</b>", ParagraphStyle(
+            "h", fontName="Helvetica-Bold", fontSize=size,
+            textColor=WHITE, alignment=TA_CENTER))
 
-    # Title banner
-    title_data = [[Paragraph(
-        f"Chocolate Mold — Cumulative Missing Count  "
-        f"({total_frames} frame(s) inspected)", title_style)]]
-    title_tbl = Table(title_data, colWidths=[doc.width])
+    # ── Page 1: Cumulative Heatmap ─────────────────────────────────────────────
+    title_tbl = Table(
+        [[Paragraph(
+            f"Chocolate Mold — Cumulative Missing Count "
+            f"({total_frames} frame(s) inspected)", title_style)]],
+        colWidths=[doc.width])
     title_tbl.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), COL_DARK),
+        ("BACKGROUND",    (0, 0), (-1, -1), COL_DARK),
         ("TOPPADDING",    (0, 0), (-1, -1), 7),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
-        ("ROUNDEDCORNERS", [4]),
     ]))
     story.append(title_tbl)
-    story.append(Spacer(1, 6 * mm))
+    story.append(Spacer(1, 6*mm))
 
-    # Build heatmap table
-    # Row 0: header (blank + col letters + "Total")
-    # Rows 1–8: row number + counts + row total
-    # Last row: "Total" + col totals + grand total
+    row_hdr_w   = 14*mm
+    tot_col_w   = 18*mm
+    cell_w_each = (doc.width - row_hdr_w - tot_col_w) / len(COLS)
+    col_widths  = [row_hdr_w] + [cell_w_each] * len(COLS) + [tot_col_w]
 
-    page_w = doc.width  # usable width in landscape
-    n_data_cols = len(COLS)
-    row_hdr_w   = 14 * mm
-    tot_col_w   = 18 * mm
-    cell_w_each = (page_w - row_hdr_w - tot_col_w) / n_data_cols
-
-    col_widths = [row_hdr_w] + [cell_w_each] * n_data_cols + [tot_col_w]
-
-    # Header row
-    hdr_row = [""] + [Paragraph(f"<b>{c}</b>", ParagraphStyle(
-        "ch", fontName="Helvetica-Bold", fontSize=8, textColor=WHITE,
-        alignment=TA_CENTER)) for c in COLS] + \
-        [Paragraph("<b>Row\nTotal</b>", ParagraphStyle(
-            "ct", fontName="Helvetica-Bold", fontSize=7, textColor=WHITE,
-            alignment=TA_CENTER, leading=9))]
-
+    hdr_row = [""] + [_hdr_para(c) for c in COLS] + [_hdr_para("Row\nTotal", 7)]
     grid_rows = [hdr_row]
 
     for row_num in ROWS:
-        row = [Paragraph(f"<b>{row_num}</b>", ParagraphStyle(
-            "rh", fontName="Helvetica-Bold", fontSize=9, textColor=WHITE,
-            alignment=TA_CENTER))]
+        row = [_hdr_para(str(row_num))]
         row_total = 0
         for col in COLS:
             count = missing_counts.get(f"{col}{row_num}", 0)
             row_total += count
             row.append(str(count) if count > 0 else "")
-        row.append(Paragraph(f"<b>{row_total}</b>", ParagraphStyle(
-            "rt", fontName="Helvetica-Bold", fontSize=9, textColor=WHITE,
-            alignment=TA_CENTER)))
+        row.append(_hdr_para(str(row_total)))
         grid_rows.append(row)
 
-    # Totals row
-    tot_row = [Paragraph("<b>Total</b>", ParagraphStyle(
-        "tl", fontName="Helvetica-Bold", fontSize=9, textColor=WHITE,
-        alignment=TA_CENTER))]
+    tot_row = [_hdr_para("Total")]
     grand_total = 0
     for col in COLS:
         ct = sum(missing_counts.get(f"{col}{r}", 0) for r in ROWS)
         grand_total += ct
-        tot_row.append(Paragraph(f"<b>{ct}</b>", ParagraphStyle(
-            "tv", fontName="Helvetica-Bold", fontSize=9, textColor=WHITE,
-            alignment=TA_CENTER)))
-    tot_row.append(Paragraph(f"<b>{grand_total}</b>", ParagraphStyle(
-        "gv", fontName="Helvetica-Bold", fontSize=10, textColor=WHITE,
-        alignment=TA_CENTER)))
+        tot_row.append(_hdr_para(str(ct)))
+    tot_row.append(_hdr_para(str(grand_total), 10))
     grid_rows.append(tot_row)
 
-    grid_tbl = Table(grid_rows, colWidths=col_widths, rowHeights=None)
-
-    # Base style commands
     ts_cmds = [
-        ("FONTNAME",    (0, 0), (-1, -1), "Helvetica"),
-        ("FONTSIZE",    (0, 0), (-1, -1), 8),
-        ("ALIGN",       (0, 0), (-1, -1), "CENTER"),
-        ("VALIGN",      (0, 0), (-1, -1), "MIDDLE"),
-        ("GRID",        (0, 0), (-1, -1), 0.4, colors.HexColor("#CCCCCC")),
-        ("TOPPADDING",  (0, 0), (-1, -1), 3),
+        ("FONTNAME",      (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE",      (0, 0), (-1, -1), 8),
+        ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID",          (0, 0), (-1, -1), 0.4, colors.HexColor("#CCCCCC")),
+        ("TOPPADDING",    (0, 0), (-1, -1), 3),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        # Header row background
-        ("BACKGROUND",  (0, 0), (-1, 0), COL_DARK),
-        # Row header column
-        ("BACKGROUND",  (0, 1), (0, -2), COL_DARK),
-        # Row total column
-        ("BACKGROUND",  (-1, 1), (-1, -2), COL_MID),
-        # Totals row
-        ("BACKGROUND",  (0, -1), (-1, -1), COL_MID),
-        # Grand total corner
-        ("BACKGROUND",  (-1, -1), (-1, -1), _rl_color("#1A252F")),
+        ("BACKGROUND",    (0, 0), (-1, 0),  COL_DARK),
+        ("BACKGROUND",    (0, 1), (0, -2),  COL_DARK),
+        ("BACKGROUND",    (-1, 1), (-1, -2), COL_MID),
+        ("BACKGROUND",    (0, -1), (-1, -1), COL_MID),
+        ("BACKGROUND",    (-1, -1), (-1, -1), _rl_color("#1A252F")),
     ]
-
-    # Per-cell background colors based on missing count
     for ri, row_num in enumerate(ROWS, start=1):
         for ci, col in enumerate(COLS, start=1):
-            coord = f"{col}{row_num}"
-            count = missing_counts.get(coord, 0)
+            count = missing_counts.get(f"{col}{row_num}", 0)
             bg    = _interp_rl_color(count, max_missing)
             ts_cmds.append(("BACKGROUND", (ci, ri), (ci, ri), bg))
-            # Text color: white for darker (more missing) cells
             t = count / max_missing if max_missing > 0 else 0
-            txt_c = WHITE if t > 0.45 else BLACK
-            ts_cmds.append(("TEXTCOLOR", (ci, ri), (ci, ri), txt_c))
+            ts_cmds.append(("TEXTCOLOR", (ci, ri), (ci, ri),
+                             WHITE if t > 0.45 else BLACK))
 
-    grid_tbl.setStyle(TableStyle(ts_cmds))
-    story.append(grid_tbl)
-    story.append(Spacer(1, 4 * mm))
-
-    # Legend
+    Table(grid_rows, colWidths=col_widths).setStyle(TableStyle(ts_cmds))
+    story.append(Table(grid_rows, colWidths=col_widths,
+                       style=TableStyle(ts_cmds)))
+    story.append(Spacer(1, 4*mm))
     story.append(Paragraph(
-        f"Each cell = number of frames where that cavity was missing.  "
-        f"Green = never missing  |  Red = missing in all {total_frames} frame(s).  "
-        f"Generated: {now_str}",
-        caption_style))
+        f"Green = never missing  |  Red = missing in all {total_frames} frames  |  "
+        f"Generated: {now_str}", caption_style))
 
-    # ════════════════════════════════════════════════════════════════════════════
-    # PAGE 2 — Frame Summary
-    # ════════════════════════════════════════════════════════════════════════════
+    # ── Page 2: Frame Summary ──────────────────────────────────────────────────
     story.append(PageBreak())
-
     story.append(Table(
         [[Paragraph("Chocolate Mold Inspection — Frame Summary", title_style)]],
         colWidths=[doc.width],
-    ))
-    story.append(Spacer(1, 6 * mm))
+        style=TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, -1), COL_DARK),
+            ("TOPPADDING",    (0, 0), (-1, -1), 7),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ])))
+    story.append(Spacer(1, 6*mm))
 
-    sum_headers_pdf = ["Frame", "Missing", "Present", "Total", "% Present", "Timestamp"]
-    sum_col_widths  = [
-        doc.width * 0.28,
-        doc.width * 0.10,
-        doc.width * 0.10,
-        doc.width * 0.10,
-        doc.width * 0.12,
-        doc.width * 0.30,
-    ]
-
-    def _hdr_para(txt):
-        return Paragraph(f"<b>{txt}</b>", ParagraphStyle(
-            "sh", fontName="Helvetica-Bold", fontSize=9,
-            textColor=WHITE, alignment=TA_CENTER))
-
-    sum_rows = [[_hdr_para(h) for h in sum_headers_pdf]]
+    sum_cw = [doc.width*0.28, doc.width*0.10, doc.width*0.10,
+              doc.width*0.10, doc.width*0.12, doc.width*0.30]
+    sum_hdrs = ["Frame", "Missing", "Present", "Total", "% Present", "Timestamp"]
+    sum_rows = [[_hdr_para(h) for h in sum_hdrs]]
 
     for _, rec in df.iterrows():
         fname   = str(rec.get("frame_name", rec["frame_id"]))
@@ -666,19 +590,14 @@ def build_cumulative_heatmap_pdf(df: pd.DataFrame) -> bytes:
         total   = len(ALL_COORDS)
         pct_str = f"{present / total * 100:.1f}%"
         ts      = str(rec.get("timestamp", ""))
-        # Color for missing cell
-        inten  = min(missing / total, 1.0)
-        miss_c = _interp_rl_color(int(inten * max_missing), max_missing)
         sum_rows.append([
-            Paragraph(fname, ParagraphStyle("fn", fontName="Helvetica", fontSize=8,
-                                             textColor=BLACK)),
+            Paragraph(fname, ParagraphStyle("fn", fontName="Helvetica", fontSize=8)),
             missing, present, total, pct_str,
             Paragraph(ts, ParagraphStyle("ts2", fontName="Helvetica", fontSize=7,
                                           textColor=colors.HexColor("#555555"),
                                           alignment=TA_CENTER)),
         ])
 
-    # Totals row
     total_missing_all = sum(
         sum(1 for c in ALL_COORDS if str(rec.get(c, "1")) == "0")
         for _, rec in df.iterrows())
@@ -687,127 +606,99 @@ def build_cumulative_heatmap_pdf(df: pd.DataFrame) -> bytes:
     pct_all           = f"{total_present_all / total_total_all * 100:.1f}%" \
                         if total_total_all > 0 else "—"
     sum_rows.append([
-        Paragraph("<b>TOTALS</b>", ParagraphStyle(
-            "tot", fontName="Helvetica-Bold", fontSize=9, textColor=WHITE)),
-        Paragraph(f"<b>{total_missing_all}</b>", ParagraphStyle(
-            "tm", fontName="Helvetica-Bold", fontSize=9, textColor=WHITE,
-            alignment=TA_CENTER)),
-        Paragraph(f"<b>{total_present_all}</b>", ParagraphStyle(
-            "tp", fontName="Helvetica-Bold", fontSize=9, textColor=WHITE,
-            alignment=TA_CENTER)),
-        Paragraph(f"<b>{total_total_all}</b>", ParagraphStyle(
-            "tt", fontName="Helvetica-Bold", fontSize=9, textColor=WHITE,
-            alignment=TA_CENTER)),
-        Paragraph(f"<b>{pct_all}</b>", ParagraphStyle(
-            "tpct", fontName="Helvetica-Bold", fontSize=9, textColor=WHITE,
-            alignment=TA_CENTER)),
-        "",
-    ])
+        _hdr_para("TOTALS"), _hdr_para(str(total_missing_all)),
+        _hdr_para(str(total_present_all)), _hdr_para(str(total_total_all)),
+        _hdr_para(pct_all), ""])
 
-    sum_tbl = Table(sum_rows, colWidths=sum_col_widths)
     sum_ts = [
-        ("FONTSIZE",    (0, 0), (-1, -1), 8),
-        ("ALIGN",       (1, 0), (-1, -1), "CENTER"),
-        ("ALIGN",       (0, 0), (0, -1), "LEFT"),
-        ("VALIGN",      (0, 0), (-1, -1), "MIDDLE"),
-        ("GRID",        (0, 0), (-1, -1), 0.4, colors.HexColor("#CCCCCC")),
-        ("TOPPADDING",  (0, 0), (-1, -1), 3),
+        ("FONTSIZE",      (0, 0), (-1, -1), 8),
+        ("ALIGN",         (1, 0), (-1, -1), "CENTER"),
+        ("ALIGN",         (0, 0), (0, -1),  "LEFT"),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID",          (0, 0), (-1, -1), 0.4, colors.HexColor("#CCCCCC")),
+        ("TOPPADDING",    (0, 0), (-1, -1), 3),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ("BACKGROUND",  (0, 0), (-1, 0), COL_DARK),
-        ("BACKGROUND",  (0, -1), (-1, -1), COL_MID),
-        ("LEFTPADDING", (0, 0), (0, -1), 6),
+        ("BACKGROUND",    (0, 0), (-1, 0),  COL_DARK),
+        ("BACKGROUND",    (0, -1), (-1, -1), COL_MID),
+        ("LEFTPADDING",   (0, 0), (0, -1),   6),
     ]
-    # Color missing column per row
     for ri in range(1, len(sum_rows) - 1):
-        rec_idx = ri - 1
-        rec     = df.iloc[rec_idx]
+        rec     = df.iloc[ri - 1]
         miss    = sum(1 for c in ALL_COORDS if str(rec.get(c, "1")) == "0")
         inten   = min(miss / len(ALL_COORDS), 1.0)
         bg      = _interp_rl_color(int(inten * max_missing), max_missing)
         sum_ts.append(("BACKGROUND", (1, ri), (1, ri), bg))
-        txt_c = WHITE if inten > 0.45 else BLACK
-        sum_ts.append(("TEXTCOLOR", (1, ri), (1, ri), txt_c))
+        sum_ts.append(("TEXTCOLOR",  (1, ri), (1, ri),
+                        WHITE if inten > 0.45 else BLACK))
 
-    sum_tbl.setStyle(TableStyle(sum_ts))
-    story.append(sum_tbl)
+    story.append(Table(sum_rows, colWidths=sum_cw, style=TableStyle(sum_ts)))
 
-    # ════════════════════════════════════════════════════════════════════════════
-    # PAGE 3 — Coordinate Frequency
-    # ════════════════════════════════════════════════════════════════════════════
+    # ── Page 3: Coordinate Frequency ──────────────────────────────────────────
     story.append(PageBreak())
-
     story.append(Table(
         [[Paragraph(
             f"Coordinate Flag Frequency  —  {total_frames} frame(s) analysed",
             title_style)]],
         colWidths=[doc.width],
-    ))
-    story.append(Spacer(1, 6 * mm))
+        style=TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, -1), COL_DARK),
+            ("TOPPADDING",    (0, 0), (-1, -1), 7),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ])))
+    story.append(Spacer(1, 6*mm))
+
+    freq_cw   = [doc.width*0.15, doc.width*0.18, doc.width*0.15,
+                 doc.width*0.15, doc.width*0.10]
+    freq_hdrs = ["Coordinate", "Times Missing", "Total Frames", "% Flagged", "Rank"]
+    freq_rows = [[_hdr_para(h) for h in freq_hdrs]]
 
     sorted_coords = sorted(ALL_COORDS,
                            key=lambda coord: (-missing_counts.get(coord, 0), coord))
-
-    freq_col_widths = [
-        doc.width * 0.15,
-        doc.width * 0.18,
-        doc.width * 0.15,
-        doc.width * 0.15,
-        doc.width * 0.10,
-    ]
-    freq_hdr = ["Coordinate", "Times Missing", "Total Frames", "% Flagged", "Rank"]
-    freq_rows = [[_hdr_para(h) for h in freq_hdr]]
-
     for rank, coord in enumerate(sorted_coords, start=1):
         count = missing_counts.get(coord, 0)
         pct   = f"{count / total_frames * 100:.1f}%" if total_frames > 0 else "0.0%"
         freq_rows.append([coord, count, total_frames, pct, rank])
 
-    # Footer summary row
-    total_events = sum(missing_counts.values())
-    avg_miss     = total_events / total_frames if total_frames > 0 else 0
+    total_events  = sum(missing_counts.values())
+    avg_miss      = total_events / total_frames if total_frames > 0 else 0
     never_flagged = sum(1 for v in missing_counts.values() if v == 0)
     freq_rows.append([
         Paragraph(
             f"<b>Total events: {total_events}  |  "
             f"Avg per frame: {avg_miss:.1f}  |  "
             f"Never flagged: {never_flagged}</b>",
-            ParagraphStyle("ffoot", fontName="Helvetica-BoldOblique",
+            ParagraphStyle("ff", fontName="Helvetica-BoldOblique",
                            fontSize=7, textColor=WHITE)),
-        "", "", "", "",
-    ])
+        "", "", "", ""])
 
-    freq_tbl = Table(freq_rows, colWidths=freq_col_widths)
     freq_ts = [
-        ("FONTSIZE",    (0, 0), (-1, -1), 8),
-        ("ALIGN",       (0, 0), (-1, -1), "CENTER"),
-        ("VALIGN",      (0, 0), (-1, -1), "MIDDLE"),
-        ("GRID",        (0, 0), (-1, -1), 0.4, colors.HexColor("#CCCCCC")),
-        ("TOPPADDING",  (0, 0), (-1, -1), 2),
+        ("FONTSIZE",      (0, 0), (-1, -1), 8),
+        ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID",          (0, 0), (-1, -1), 0.4, colors.HexColor("#CCCCCC")),
+        ("TOPPADDING",    (0, 0), (-1, -1), 2),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-        ("BACKGROUND",  (0, 0), (-1, 0), COL_DARK),
-        ("BACKGROUND",  (0, -1), (-1, -1), COL_MID),
-        ("SPAN",        (0, -1), (-1, -1)),
+        ("BACKGROUND",    (0, 0), (-1, 0),  COL_DARK),
+        ("BACKGROUND",    (0, -1), (-1, -1), COL_MID),
+        ("SPAN",          (0, -1), (-1, -1)),
     ]
-    # Color the % Flagged column per coord row
     for ri, coord in enumerate(sorted_coords, start=1):
         count = missing_counts.get(coord, 0)
         t_val = count / max_missing if max_missing > 0 else 0
-        bg    = _interp_rl_color(count, max_missing)
-        freq_ts.append(("BACKGROUND", (3, ri), (3, ri), bg))
-        txt_c = WHITE if t_val > 0.45 else BLACK
-        freq_ts.append(("TEXTCOLOR", (3, ri), (3, ri), txt_c))
-        # Subtle tint on Times Missing when non-zero
+        freq_ts.append(("BACKGROUND", (3, ri), (3, ri),
+                         _interp_rl_color(count, max_missing)))
+        freq_ts.append(("TEXTCOLOR",  (3, ri), (3, ri),
+                         WHITE if t_val > 0.45 else BLACK))
         if count > 0:
             inten = min(count / total_frames, 1.0)
-            r2 = (231 * inten + 236 * (1 - inten)) / 255
-            g2 = (76  * inten + 240 * (1 - inten)) / 255
-            b2 = (60  * inten + 241 * (1 - inten)) / 255
             freq_ts.append(("BACKGROUND", (1, ri), (1, ri),
-                             colors.Color(r2, g2, b2)))
+                             colors.Color(
+                                 (231*inten + 236*(1-inten))/255,
+                                 (76 *inten + 240*(1-inten))/255,
+                                 (60 *inten + 241*(1-inten))/255)))
 
-    freq_tbl.setStyle(TableStyle(freq_ts))
-    story.append(freq_tbl)
-    story.append(Spacer(1, 4 * mm))
+    story.append(Table(freq_rows, colWidths=freq_cw, style=TableStyle(freq_ts)))
+    story.append(Spacer(1, 4*mm))
     story.append(Paragraph(f"Generated: {now_str}", caption_style))
 
     doc.build(story)
@@ -823,7 +714,6 @@ def init_state():
         "coord_dict":      {c: True for c in ALL_COORDS},
         "dirty":           False,
         "frame_image":     None,
-        "show_overview":   False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -834,7 +724,6 @@ def load_frame(frame_id: str):
     st.session_state.active_frame_id = frame_id
     st.session_state.coord_dict      = get_frame_dict(st.session_state.df, frame_id)
     st.session_state.dirty           = False
-    st.session_state.show_overview   = False
     row = st.session_state.df[st.session_state.df["frame_id"] == frame_id]
     if not row.empty:
         img_path = str(row.iloc[0].get("image_path", ""))
@@ -843,30 +732,14 @@ def load_frame(frame_id: str):
         st.session_state.frame_image = None
 
 
-def auto_save(frame_id: str, frame_name: str, image_path: str = ""):
-    if not image_path:
-        row = st.session_state.df[st.session_state.df["frame_id"] == frame_id]
-        if not row.empty:
-            image_path = str(row.iloc[0].get("image_path", ""))
-    st.session_state.df = upsert_frame(
-        st.session_state.df, frame_id, frame_name,
-        st.session_state.coord_dict, image_path)
-    save_data(st.session_state.df)
-    st.session_state.dirty = False
-
-
 def navigate_to_adjacent_frame(direction: int):
     df        = st.session_state.df
     frame_ids = df["frame_id"].tolist()
     if not frame_ids:
         return
     current = st.session_state.active_frame_id
-    if current not in frame_ids:
-        load_frame(frame_ids[0])
-        return
-    idx     = frame_ids.index(current)
-    new_idx = (idx + direction) % len(frame_ids)
-    load_frame(frame_ids[new_idx])
+    idx     = frame_ids.index(current) if current in frame_ids else 0
+    load_frame(frame_ids[(idx + direction) % len(frame_ids)])
 
 
 # ── Main app ───────────────────────────────────────────────────────────────────
@@ -881,53 +754,23 @@ def main():
 
     init_state()
 
-    # ── CSS — light/dark mode adaptive ────────────────────────────────────────
     st.markdown("""
     <style>
-    /* ── Stat boxes ── */
     .stat-box {
-        border-radius: 10px;
-        padding: 14px 18px;
-        text-align: center;
+        border-radius: 10px; padding: 14px 18px; text-align: center;
         margin-bottom: 4px;
         background: var(--stat-bg, #16213E);
         border: 1px solid var(--stat-border, #2C3E50);
     }
     .stat-number { font-size: 1.9rem; font-weight: 700; }
-    .stat-label  { font-size: 0.82rem; color: var(--muted, #95A5A6); margin-top: 3px; }
+    .stat-label  { font-size: 0.82rem; color: #95A5A6; margin-top: 3px; }
     .green { color: #27AE60; }
     .red   { color: #E74C3C; }
-
-    /* ── Buttons ── */
     .stButton > button { border-radius: 8px; font-weight: 600; }
-
-    /* ── Upload hint ── */
     .upload-hint {
-        border: 1px dashed #3498DB;
-        border-radius: 8px;
-        padding: 12px 16px;
-        font-size: 0.88rem;
-        margin-bottom: 8px;
-        background: var(--hint-bg, transparent);
-        color: var(--hint-text, inherit);
+        border: 1px dashed #3498DB; border-radius: 8px;
+        padding: 12px 16px; font-size: 0.88rem; margin-bottom: 8px;
     }
-
-    /* ── Dark mode overrides ── */
-    @media (prefers-color-scheme: dark) {
-        .stat-box   { --stat-bg: #16213E; --stat-border: #2C3E50; }
-        .stat-label { color: #95A5A6; }
-        .upload-hint { --hint-bg: #16213E; --hint-text: #BDC3C7; }
-    }
-
-    /* ── Light mode overrides ── */
-    @media (prefers-color-scheme: light) {
-        .stat-box   { --stat-bg: #F4F6F8; --stat-border: #D5D8DC; }
-        .stat-label { color: #6C757D; }
-        .upload-hint { --hint-bg: #EAF4FB; --hint-text: #2C3E50; }
-    }
-
-    /* Streamlit's own theme vars already handle most text/bg;
-       the above targets only our custom HTML blocks. */
     </style>
     """, unsafe_allow_html=True)
 
@@ -937,11 +780,10 @@ def main():
         st.caption("15 × 8 grid | 120 positions")
         st.divider()
 
-        # Upload
         st.subheader("📸 Upload Frame Photos")
         st.markdown(
-            f'<div class="upload-hint">Upload up to {MAX_UPLOAD_FILES} frame images '
-            'at once. A new record is created automatically per photo.</div>',
+            f'<div class="upload-hint">Upload up to {MAX_UPLOAD_FILES} images at once. '
+            'A new record is created automatically per photo.</div>',
             unsafe_allow_html=True)
 
         uploaded_photos = st.file_uploader(
@@ -956,7 +798,6 @@ def main():
             if len(uploaded_photos) > MAX_UPLOAD_FILES:
                 st.warning(f"Only the first {MAX_UPLOAD_FILES} images will be imported.")
                 uploaded_photos = uploaded_photos[:MAX_UPLOAD_FILES]
-
             new_count = 0
             for uf in uploaded_photos:
                 base_name = os.path.splitext(uf.name)[0]
@@ -966,37 +807,30 @@ def main():
                     continue
                 fid   = f"frame_{int(time.time() * 1000)}_{new_count}"
                 ipath = save_frame_image(fid, uf)
-                fresh = {c: True for c in ALL_COORDS}
                 st.session_state.df = upsert_frame(
-                    st.session_state.df, fid, base_name, fresh, ipath)
+                    st.session_state.df, fid, base_name,
+                    {c: True for c in ALL_COORDS}, ipath)
                 new_count += 1
-
             if new_count:
                 save_data(st.session_state.df)
                 st.success(f"Imported {new_count} new frame(s).")
-                last_id = st.session_state.df["frame_id"].iloc[-1]
-                load_frame(last_id)
+                load_frame(st.session_state.df["frame_id"].iloc[-1])
                 st.rerun()
 
         st.divider()
-
-        # Frame selector
         st.subheader("📋 Select Frame")
         df = st.session_state.df
 
-        # Homepage / overview button
         if st.button("🏠 All Frames Overview", use_container_width=True):
-            st.session_state.show_overview   = True
             st.session_state.active_frame_id = None
             st.rerun()
 
         if df.empty:
-            st.info("No frames yet — upload photos above to get started.")
+            st.info("No frames yet — upload photos above.")
         else:
             frame_options = df["frame_name"].tolist()
             frame_ids     = df["frame_id"].tolist()
-
-            current_idx = 0
+            current_idx   = 0
             if st.session_state.active_frame_id in frame_ids:
                 current_idx = frame_ids.index(st.session_state.active_frame_id)
 
@@ -1029,12 +863,9 @@ def main():
             st.caption(f"Total frames: **{len(df)}**")
 
         st.divider()
-
-        # Export
         st.subheader("📥 Export")
         df = st.session_state.df
 
-        # XLSX
         if st.button("⬇️ Download Heatmap (.xlsx)",
                      use_container_width=True, disabled=df.empty):
             xlsx_bytes = build_cumulative_heatmap_workbook(df)
@@ -1045,7 +876,6 @@ def main():
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True)
 
-        # PDF
         if st.button("⬇️ Download Report (.pdf)",
                      use_container_width=True, disabled=df.empty):
             pdf_bytes = build_cumulative_heatmap_pdf(df)
@@ -1063,7 +893,6 @@ def main():
                 file_name="mold_data_backup.csv",
                 mime="text/csv", use_container_width=True)
 
-        # CSV restore
         st.divider()
         st.subheader("⬆️ Restore from CSV")
         uploaded_csv = st.file_uploader("Upload backup CSV", type="csv",
@@ -1083,10 +912,8 @@ def main():
     # ── Main panel ─────────────────────────────────────────────────────────────
     df = st.session_state.df
 
-    # ── Homepage / overview ────────────────────────────────────────────────────
-    if st.session_state.active_frame_id is None or st.session_state.show_overview:
+    if st.session_state.active_frame_id is None:
         st.markdown("## 🍫 Chocolate Mold Inspector")
-
         if df.empty:
             st.info("Upload frame photos in the sidebar to get started.")
             return
@@ -1095,10 +922,9 @@ def main():
         summary = []
         for _, rec in df.iterrows():
             missing = sum(1 for c in ALL_COORDS if str(rec.get(c, "1")) != "1")
-            has_img = "✅" if str(rec.get("image_path", "")) else "—"
             summary.append({
                 "Frame":        rec["frame_name"],
-                "Photo":        has_img,
+                "Photo":        "✅" if str(rec.get("image_path", "")) else "—",
                 "Missing":      missing,
                 "Present":      len(ALL_COORDS) - missing,
                 "% Present":    f"{(len(ALL_COORDS)-missing)/len(ALL_COORDS)*100:.1f}%",
@@ -1106,15 +932,13 @@ def main():
             })
         st.dataframe(pd.DataFrame(summary), use_container_width=True, hide_index=True)
 
-        # Quick-load buttons for each frame
-        st.markdown("#### Load a frame to begin inspection")
+        st.markdown("#### Load a frame")
         frame_ids   = df["frame_id"].tolist()
         frame_names = df["frame_name"].tolist()
         btn_cols    = st.columns(min(len(frame_ids), 5))
         for i, (fid, fname) in enumerate(zip(frame_ids, frame_names)):
             with btn_cols[i % 5]:
-                if st.button(fname, key=f"overview_load_{fid}",
-                             use_container_width=True):
+                if st.button(fname, key=f"ov_{fid}", use_container_width=True):
                     load_frame(fid)
                     st.rerun()
         return
@@ -1134,27 +958,23 @@ def main():
     missing_list  = [c for c, v in coord_dict.items() if not v]
     present_count = len(ALL_COORDS) - len(missing_list)
 
-    # ── Header + navigation ────────────────────────────────────────────────────
-    header_left, header_right = st.columns([3, 1])
-    with header_left:
+    # Header + prev/next navigation
+    header_l, header_r = st.columns([3, 1])
+    with header_l:
         st.markdown(f"## 🍫 {frame_name}")
         st.caption(
             f"Frame {current_idx + 1} of {total_frames}  |  "
-            f"ID: `{active_id}`  |  Saved: {active_row.get('timestamp', '—')}"
-        )
-    with header_right:
-        nav_c1, nav_c2 = st.columns(2)
-        with nav_c1:
+            f"Saved: {active_row.get('timestamp', '—')}")
+    with header_r:
+        nav1, nav2 = st.columns(2)
+        with nav1:
             if st.button("◀ Prev", use_container_width=True,
-                         disabled=(total_frames <= 1), help="Previous frame"):
-                navigate_to_adjacent_frame(-1)
-                st.rerun()
-        with nav_c2:
+                         disabled=(total_frames <= 1)):
+                navigate_to_adjacent_frame(-1); st.rerun()
+        with nav2:
             if st.button("Next ▶", use_container_width=True,
-                         disabled=(total_frames <= 1), help="Next frame",
-                         type="primary"):
-                navigate_to_adjacent_frame(+1)
-                st.rerun()
+                         disabled=(total_frames <= 1), type="primary"):
+                navigate_to_adjacent_frame(+1); st.rerun()
 
     # Stats
     col_a, col_b, col_c, col_d = st.columns(4)
@@ -1179,9 +999,9 @@ def main():
 
     st.divider()
 
-    # Photo upload expander
+    # Per-frame photo attachment
     with st.expander(
-        "📷 " + ("Replace frame photo" if photo else "Attach a photo to this frame"),
+            "📷 " + ("Replace frame photo" if photo else "Attach a photo to this frame"),
             expanded=(photo is None)):
         per_frame_upload = st.file_uploader(
             "Upload mold photo for this frame",
@@ -1194,62 +1014,55 @@ def main():
             st.session_state.df = upsert_frame(
                 st.session_state.df, active_id, frame_name, coord_dict, ipath)
             save_data(st.session_state.df)
-            st.success("Photo saved to this frame.")
+            st.success("Photo saved.")
             st.rerun()
 
     # Tabs
     if photo:
         tab_photo, tab_grid, tab_quick, tab_vis = st.tabs([
-            "🖼️ Photo Inspector", "🔲 Grid Editor", "⌨️ Quick Entry",
-            "📊 Overlay Preview"])
+            "🖼️ Photo Inspector", "🔲 Grid Editor",
+            "⌨️ Quick Entry",     "📊 Overlay Preview"])
     else:
+        tab_photo = None
         tab_grid, tab_quick, tab_vis = st.tabs([
             "🔲 Grid Editor", "⌨️ Quick Entry", "📊 Grid Preview"])
-        tab_photo = None
 
     # ── Tab: Photo Inspector ───────────────────────────────────────────────────
+    # KEY FIX: every toggle calls auto_save() immediately — no dirty flag,
+    # no Save button needed. The coord_dict in session_state AND the CSV are
+    # always in sync, so switching tabs never loses anything.
     if tab_photo and photo:
         with tab_photo:
-            # Process canvas click from query params (single-click relay)
-            qp = st.query_params
-            pending_click = qp.get("click", "")
-            if pending_click and pending_click in ALL_COORDS:
-                # Toggle in session state, mark dirty — do NOT auto-save
-                st.session_state.coord_dict[pending_click] = \
-                    not st.session_state.coord_dict.get(pending_click, True)
-                st.session_state.dirty = True
-                st.query_params.clear()
-                st.rerun()
 
-            # Top control strip
-            ctrl_c1, ctrl_c2, ctrl_c3, ctrl_c4, ctrl_c5 = st.columns([1, 1, 1, 1, 3])
-            with ctrl_c1:
+            # Top toolbar
+            tc1, tc2, tc3, tc4, tc5 = st.columns([1, 1, 1, 1, 3])
+            with tc1:
                 if st.button("✅ All Present", use_container_width=True,
                              key="pi_all_pres"):
                     for c in ALL_COORDS:
                         st.session_state.coord_dict[c] = True
-                    st.session_state.dirty = True
+                    auto_save(active_id, frame_name)
                     st.rerun()
-            with ctrl_c2:
+            with tc2:
                 if st.button("❌ All Missing", use_container_width=True,
                              key="pi_all_miss"):
                     for c in ALL_COORDS:
                         st.session_state.coord_dict[c] = False
-                    st.session_state.dirty = True
+                    auto_save(active_id, frame_name)
                     st.rerun()
-            with ctrl_c3:
-                if st.button("🔄 Invert", use_container_width=True, key="pi_invert"):
+            with tc3:
+                if st.button("🔄 Invert", use_container_width=True, key="pi_inv"):
                     for c in ALL_COORDS:
                         st.session_state.coord_dict[c] = \
                             not st.session_state.coord_dict[c]
-                    st.session_state.dirty = True
+                    auto_save(active_id, frame_name)
                     st.rerun()
-            with ctrl_c4:
-                opacity = st.slider("Overlay opacity", 20, 220, 40, 10,
-                                    key="overlay_opacity",
+            with tc4:
+                opacity = st.slider("Overlay", 20, 220, 40, 10,
+                                    key="pi_opacity",
                                     label_visibility="collapsed")
                 st.caption("Opacity")
-            with ctrl_c5:
+            with tc5:
                 if missing_list:
                     badges = " ".join(
                         f"<span style='background:#E74C3C;color:#FFF;"
@@ -1257,7 +1070,7 @@ def main():
                         f"margin:1px;display:inline-block'>{c}</span>"
                         for c in sorted(missing_list))
                     st.markdown(
-                        f"<div style='line-height:2.0;padding-top:2px'>"
+                        f"<div style='line-height:2;padding-top:2px'>"
                         f"<strong style='color:#E74C3C'>"
                         f"Missing ({len(missing_list)}):</strong> {badges}</div>",
                         unsafe_allow_html=True)
@@ -1266,190 +1079,71 @@ def main():
 
             st.markdown("<hr style='margin:4px 0 8px'>", unsafe_allow_html=True)
 
-            # Build overlay
-            cur_opacity = st.session_state.get("overlay_opacity", 40)
-            overlay_img = render_overlay_on_photo(
-                photo, st.session_state.coord_dict, opacity=cur_opacity)
+            # ── Two-column layout: overlay image (left) + coord grid (right) ──
+            img_col, grid_col = st.columns([3, 2])
 
-            W_img, H_img = photo.size
-            margin_l = max(24, int(W_img * 0.038))
-            margin_t = max(20, int(H_img * 0.055))
-            grid_w   = W_img - margin_l - max(4, int(W_img * 0.008))
-            grid_h   = H_img - margin_t - max(4, int(H_img * 0.008))
-            cell_w   = grid_w / len(COLS)
-            cell_h   = grid_h / len(ROWS)
+            with img_col:
+                # Render and display the overlay image (static, for reference)
+                cur_opacity = st.session_state.get("pi_opacity", 40)
+                overlay_img = render_overlay_on_photo(
+                    photo, st.session_state.coord_dict, opacity=cur_opacity)
+                st.image(overlay_img, use_container_width=True, caption=frame_name)
 
-            b64_img    = pil_to_b64(overlay_img, fmt="JPEG")
-            coord_json = json.dumps(
-                {c: (1 if st.session_state.coord_dict.get(c, True) else 0)
-                 for c in ALL_COORDS})
-            cols_json  = json.dumps(COLS)
-            rows_json  = json.dumps([str(r) for r in ROWS])
-            canvas_id  = f"mold_{re.sub(r'[^a-zA-Z0-9]', '_', active_id)}"
-
-            canvas_html = f"""
-<style>
-#{canvas_id}_wrap {{
-  position: relative; display: block; width: 100%; line-height: 0;
-}}
-#{canvas_id} {{
-  width: 100%; height: auto; display: block;
-  border-radius: 6px; cursor: crosshair;
-  box-shadow: 0 2px 16px rgba(0,0,0,0.35);
-}}
-#{canvas_id}_tip {{
-  position: fixed; background: rgba(15,15,15,0.88); color: #fff;
-  padding: 5px 13px; border-radius: 6px;
-  font: 700 13px/1.5 Arial,sans-serif; pointer-events: none;
-  display: none; z-index: 9999; white-space: nowrap;
-  border: 1px solid rgba(255,255,255,0.12);
-}}
-#{canvas_id}_flash {{
-  position: fixed; top: 50%; left: 50%;
-  transform: translate(-50%, -50%);
-  background: rgba(0,0,0,0.78); color: #fff;
-  padding: 10px 24px; border-radius: 10px;
-  font: 700 15px Arial,sans-serif; pointer-events: none;
-  display: none; z-index: 9999;
-}}
-#{canvas_id}_msg {{
-  font: 12px Arial,sans-serif; color: #7F8C8D;
-  text-align: center; padding: 5px 0 0; min-height: 20px;
-}}
-</style>
-<div id="{canvas_id}_wrap">
-  <canvas id="{canvas_id}"></canvas>
-  <div id="{canvas_id}_tip"></div>
-  <div id="{canvas_id}_flash"></div>
-</div>
-<div id="{canvas_id}_msg">👆 Click any cavity to mark it missing or restore it — then hit Save Frame</div>
-<script>
-(function() {{
-  const COLS={cols_json}, ROWS={rows_json}, coords={coord_json};
-  const marginL={margin_l}, marginT={margin_t};
-  const cellW={cell_w}, cellH={cell_h};
-  const IMG_W={W_img}, IMG_H={H_img}, CID="{canvas_id}";
-
-  const canvas=document.getElementById(CID);
-  const ctx=canvas.getContext('2d');
-  const tip=document.getElementById(CID+'_tip');
-  const flash=document.getElementById(CID+'_flash');
-  const msg=document.getElementById(CID+'_msg');
-
-  canvas.width=IMG_W; canvas.height=IMG_H;
-
-  const baseImg=new Image();
-  baseImg.src='data:image/jpeg;base64,{b64_img}';
-  baseImg.onload=()=>ctx.drawImage(baseImg,0,0);
-
-  function getScale(){{
-    const r=canvas.getBoundingClientRect();
-    return {{sx:IMG_W/r.width, sy:IMG_H/r.height, r}};
-  }}
-  function coordFromXY(x,y){{
-    const ci=Math.floor((x-marginL)/cellW);
-    const ri=Math.floor((y-marginT)/cellH);
-    if(ci<0||ci>=COLS.length||ri<0||ri>=ROWS.length) return null;
-    return COLS[ci]+ROWS[ri];
-  }}
-
-  canvas.addEventListener('mousemove', e=>{{
-    const {{sx,sy,r}}=getScale();
-    const x=(e.clientX-r.left)*sx, y=(e.clientY-r.top)*sy;
-    const coord=coordFromXY(x,y);
-    if(coord){{
-      const st=coords[coord]===1?'🟢 Present':'🔴 Missing';
-      tip.textContent=coord+' — '+st+'  (click to toggle)';
-      tip.style.display='block';
-      tip.style.left=(e.clientX+16)+'px';
-      tip.style.top=(e.clientY-12)+'px';
-    }} else tip.style.display='none';
-  }});
-  canvas.addEventListener('mouseleave',()=>tip.style.display='none');
-
-  canvas.addEventListener('click', e=>{{
-    const {{sx,sy,r}}=getScale();
-    const x=(e.clientX-r.left)*sx, y=(e.clientY-r.top)*sy;
-    const coord=coordFromXY(x,y);
-    if(!coord) return;
-
-    coords[coord]=coords[coord]===1?0:1;
-    const nowMissing=coords[coord]===0;
-
-    const ci=COLS.indexOf(coord[0]);
-    const ri=ROWS.indexOf(coord.slice(1));
-    const x0=marginL+ci*cellW, y0=marginT+ri*cellH;
-    ctx.drawImage(baseImg,x0,y0,cellW,cellH,x0,y0,cellW,cellH);
-    ctx.fillStyle=nowMissing?'rgba(231,76,60,0.40)':'rgba(46,204,113,0.40)';
-    ctx.fillRect(x0+1,y0+1,cellW-2,cellH-2);
-    ctx.strokeStyle='rgba(255,255,255,0.75)';
-    ctx.lineWidth=1.5;
-    ctx.strokeRect(x0+0.75,y0+0.75,cellW-1.5,cellH-1.5);
-    ctx.fillStyle=nowMissing?'#fff':'rgba(10,10,10,0.85)';
-    ctx.font='bold '+Math.max(9,Math.floor(Math.min(cellW,cellH)*0.30))+'px Arial';
-    ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.fillText(coord,x0+cellW/2,y0+cellH/2);
-
-    tip.style.display='none';
-    msg.innerHTML=nowMissing
-      ?'<span style="color:#E74C3C">🔴 Marked MISSING: <strong>'+coord+'</strong> — remember to Save Frame</span>'
-      :'<span style="color:#2ECC71">🟢 Marked PRESENT: <strong>'+coord+'</strong> — remember to Save Frame</span>';
-
-    flash.textContent=(nowMissing?'🔴 ':'🟢 ')+coord;
-    flash.style.display='block';
-    setTimeout(()=>flash.style.display='none',700);
-
-    try {{
-      const url=new URL(window.parent.location.href);
-      url.searchParams.set('click',coord);
-      window.parent.history.pushState({{}},'',url.toString());
-      window.parent.postMessage({{type:'streamlit:forceRerender'}},'*');
-    }} catch(err) {{
-      const inputs=window.parent.document.querySelectorAll(
-        '[data-testid="stTextInput"] input');
-      if(inputs.length){{
-        const inp=inputs[inputs.length-1];
-        Object.getOwnPropertyDescriptor(
-          window.HTMLInputElement.prototype,'value')
-          .set.call(inp,coord);
-        inp.dispatchEvent(new Event('input',{{bubbles:true}}));
-      }}
-    }}
-  }});
-}})();
-</script>
-"""
-            components.html(canvas_html,
-                            height=int(H_img * 820 / max(W_img, 1)) + 70,
-                            scrolling=False)
-
-            # ── Save Frame button + unsaved warning ───────────────────────────
-            save_col, dl_col = st.columns([1, 1])
-            with save_col:
-                if st.button("💾 Save Frame", use_container_width=True,
-                             type="primary", key="pi_save",
-                             disabled=not st.session_state.dirty):
-                    auto_save(active_id, frame_name)
-                    st.success("Frame saved!")
-                    st.rerun()
-            with dl_col:
                 buf_dl = io.BytesIO()
                 overlay_img.save(buf_dl, format="PNG")
                 st.download_button(
                     "⬇️ Download overlay image",
                     data=buf_dl.getvalue(),
                     file_name=f"{re.sub(r'[^a-zA-Z0-9_-]','_',frame_name)}_overlay.png",
-                    mime="image/png",
-                    use_container_width=True,
-                )
-            if st.session_state.dirty:
-                st.warning("⚠️ You have unsaved changes — click **Save Frame** above.")
+                    mime="image/png", use_container_width=True)
+
+            with grid_col:
+                # ── Clickable coordinate grid ──────────────────────────────────
+                # This is the RELIABLE toggle mechanism.
+                # Every button click calls auto_save() — persisted immediately.
+                st.markdown(
+                    "**Click any cell** to toggle it.  "
+                    "🟢 = present &nbsp; 🔴 = missing  \n"
+                    "_Changes save instantly._")
+
+                # Column headers
+                hcols = st.columns([0.4] + [1] * len(COLS))
+                hcols[0].markdown(
+                    "<div style='text-align:center;font-size:0.7rem'><b>↓</b></div>",
+                    unsafe_allow_html=True)
+                for i, lbl in enumerate(COLS):
+                    hcols[i + 1].markdown(
+                        f"<div style='text-align:center;font-weight:700;"
+                        f"color:#3498DB;font-size:0.72rem'>{lbl}</div>",
+                        unsafe_allow_html=True)
+
+                # Data rows — each button auto_saves on click
+                for row_num in ROWS:
+                    rcols = st.columns([0.4] + [1] * len(COLS))
+                    rcols[0].markdown(
+                        f"<div style='text-align:center;font-weight:700;"
+                        f"color:#3498DB;font-size:0.72rem'>{row_num}</div>",
+                        unsafe_allow_html=True)
+                    for ci, col_lbl in enumerate(COLS):
+                        coord   = f"{col_lbl}{row_num}"
+                        present = st.session_state.coord_dict.get(coord, True)
+                        with rcols[ci + 1]:
+                            if st.button(
+                                "🟢" if present else "🔴",
+                                key=f"pi_btn_{coord}",
+                                help=f"{coord}: "
+                                     f"{'Present — click to mark missing' if present else 'MISSING — click to restore'}",
+                                use_container_width=True,
+                            ):
+                                # Toggle and IMMEDIATELY persist
+                                st.session_state.coord_dict[coord] = not present
+                                auto_save(active_id, frame_name)
+                                st.rerun()
 
     # ── Tab: Grid Editor ──────────────────────────────────────────────────────
     with tab_grid:
-        st.markdown(
-            "Click a cell to toggle **Present 🟢** ↔ **Missing 🔴**, "
-            "then hit **Save Frame**.")
+        st.markdown("Click a cell to toggle **Present 🟢** ↔ **Missing 🔴**, "
+                    "then hit **Save Frame**.")
 
         tb1, tb2, tb3, tb4 = st.columns(4)
         with tb1:
@@ -1463,7 +1157,7 @@ def main():
                     st.session_state.coord_dict[c] = False
                 st.session_state.dirty = True; st.rerun()
         with tb3:
-            if st.button("🔄 Invert", use_container_width=True, key="g_invert"):
+            if st.button("🔄 Invert", use_container_width=True, key="g_inv"):
                 for c in ALL_COORDS:
                     st.session_state.coord_dict[c] = not st.session_state.coord_dict[c]
                 st.session_state.dirty = True; st.rerun()
@@ -1486,8 +1180,7 @@ def main():
             rcols = st.columns([0.5] + [1] * len(COLS))
             rcols[0].markdown(
                 f"<div style='text-align:center;font-weight:700;"
-                f"color:#3498DB'>{row_num}</div>",
-                unsafe_allow_html=True)
+                f"color:#3498DB'>{row_num}</div>", unsafe_allow_html=True)
             for ci, col_lbl in enumerate(COLS):
                 coord   = f"{col_lbl}{row_num}"
                 present = st.session_state.coord_dict.get(coord, True)
@@ -1523,10 +1216,10 @@ def main():
                 value=", ".join(sorted(missing_list)) if missing_list else "",
                 height=90, placeholder="e.g. A1, B3, G5, O8")
             ca, cb = st.columns(2)
-            apply_btn = ca.form_submit_button("Apply (replace all missing)",
-                                              use_container_width=True, type="primary")
-            add_btn   = cb.form_submit_button("Add to existing missing",
-                                              use_container_width=True)
+            apply_btn = ca.form_submit_button(
+                "Apply (replace all missing)", use_container_width=True, type="primary")
+            add_btn   = cb.form_submit_button(
+                "Add to existing missing", use_container_width=True)
 
         if apply_btn or add_btn:
             tokens = re.split(r"[\s,;]+", raw.strip().upper())
@@ -1561,10 +1254,10 @@ def main():
         st.dataframe(pd.DataFrame(status_rows), use_container_width=True,
                      hide_index=True)
 
-    # ── Tab: Overlay Preview ────────────────────────────────────────────
+    # ── Tab: Overlay / Grid Preview ───────────────────────────────────────────
     with tab_vis:
         if photo:
-            st.markdown("Overlay rendered on actual mold photo. 🟢 Present  🔴 Missing")
+            st.markdown("Overlay on mold photo. 🟢 Present  🔴 Missing")
             opa = st.slider("Overlay opacity", 20, 220, 40, 10, key="vis_opacity")
             ov  = render_overlay_on_photo(photo, st.session_state.coord_dict,
                                           opacity=opa)
@@ -1575,8 +1268,7 @@ def main():
                 file_name=f"{re.sub(r'[^a-zA-Z0-9_-]','_',frame_name)}_overlay.png",
                 mime="image/png")
         else:
-            st.markdown("Synthetic grid (upload a photo to see the real mold). "
-                        "🟢 Present  🔴 Missing")
+            st.markdown("Synthetic grid. 🟢 Present  🔴 Missing")
             grid_img = render_plain_grid(st.session_state.coord_dict)
             st.image(grid_img, use_container_width=True, caption=frame_name)
             buf2 = io.BytesIO(); grid_img.save(buf2, format="PNG")
@@ -1595,21 +1287,19 @@ def main():
                 st.markdown(
                     f"**Row {rn}:** " + " ".join(
                         f"<span style='background:#E74C3C;color:#FFF;"
-                        f"padding:2px 6px;border-radius:4px;"
-                        f"font-size:0.85rem'>{c}</span>"
+                        f"padding:2px 6px;border-radius:4px;font-size:0.85rem'>{c}</span>"
                         for c in coords_in_row),
                     unsafe_allow_html=True)
         else:
             st.success("🎉 All 120 positions are present!")
 
-    # ── Bottom navigation ──────────────────────────────────────────────────────
+    # Bottom navigation
     st.divider()
     bot_l, bot_m, bot_r = st.columns([1, 2, 1])
     with bot_l:
         if st.button("◄ Previous Frame", use_container_width=True,
                      disabled=(total_frames <= 1)):
-            navigate_to_adjacent_frame(-1)
-            st.rerun()
+            navigate_to_adjacent_frame(-1); st.rerun()
     with bot_m:
         st.markdown(
             f"<div style='text-align:center;padding-top:8px'>"
@@ -1619,8 +1309,7 @@ def main():
     with bot_r:
         if st.button("Next Frame ►", use_container_width=True,
                      disabled=(total_frames <= 1), type="primary"):
-            navigate_to_adjacent_frame(+1)
-            st.rerun()
+            navigate_to_adjacent_frame(+1); st.rerun()
 
 
 if __name__ == "__main__":
