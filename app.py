@@ -173,7 +173,7 @@ def render_overlay(photo: Image.Image, coord_dict: dict, opacity: int = 20) -> I
 
 
 def build_clickable_photo_html(photo: Image.Image, coord_dict: dict,
-                                opacity: int = 55,
+                                opacity: int = 20,
                                 display_width: int = 900) -> str:
     """
     Return an HTML snippet with a <canvas> drawn over the photo.
