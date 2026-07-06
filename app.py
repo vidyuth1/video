@@ -124,7 +124,7 @@ def pil_to_b64(img: Image.Image, fmt: str = "JPEG") -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
-def render_overlay(photo: Image.Image, coord_dict: dict, opacity: int = 55) -> Image.Image:
+def render_overlay(photo: Image.Image, coord_dict: dict, opacity: int = 20) -> Image.Image:
     """Render the mold photo with a semi-transparent colour overlay per cell."""
     base = photo.convert("RGBA")
     W, H = base.size
