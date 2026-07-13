@@ -1,18 +1,24 @@
 """
 Mold Well Tracker
 =================
-Streamlit app that lets you upload a photo of a mold (or plate) laid out as a
-15 x 8 grid (120 coordinates / "wells"), click directly on the image to mark
-a well as Empty or Present, and autosaves every click as it happens.
+Streamlit app that lets you upload a photo of a mold (or plate) laid out as
+a 15 x 8 grid (120 coordinates), click anywhere inside a coordinate's cell
+on the image to mark it Empty or Present, and autosaves every click as it
+happens.
+
+Coordinate naming: columns A-O (15), rows 1-8 (8), e.g. "B3" = column B,
+row 3.
 
 How it works
 ------------
 1. Upload an image.
-2. Calibrate the grid ONCE per image: click the center of the first well
-   (top-left) then the center of the last well (bottom-right). The 120
-   points are evenly interpolated between those two clicks.
-3. Switch to "Mark wells" mode and click any well dot to toggle it between
-   Present (green) and Empty (red). Every click is written to disk
+2. Calibrate the grid ONCE per image: click the OUTER TOP-LEFT corner of
+   the grid (just outside cell A1), then the OUTER BOTTOM-RIGHT corner
+   (just outside cell O8). That rectangle is divided evenly into 15 x 8
+   cells.
+3. Switch to "Mark wells" mode and click ANYWHERE inside a cell to toggle
+   it between Present (green) and Empty (red) -- no need to hit a precise
+   point, the whole cell area is clickable. Every click is written to disk
    immediately -- no save button needed.
 
 All state (which wells are empty + the grid calibration) is stored per-image
@@ -22,7 +28,6 @@ re-uploading the same image later restores exactly where you left off.
 
 import hashlib
 import json
-import math
 import os
 from io import BytesIO
 
@@ -34,20 +39,19 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 # --------------------------------------------------------------------------
 # CONFIG - tweak these to match your mold
 # --------------------------------------------------------------------------
-ROWS = 8                        # 8 rows    -> labeled A-H
-COLS = 15                       # 15 columns -> labeled 1-15  (8 x 15 = 120)
-ROW_LABELS = "ABCDEFGH"
+COLS = 15                       # 15 columns -> labeled A-O
+ROWS = 8                        # 8 rows     -> labeled 1-8   (15 x 8 = 120)
+COL_LABELS = "ABCDEFGHIJKLMNO"  # 15 letters
 
 MAX_DISPLAY_WIDTH = 900         # working image width in pixels
-DEFAULT_CLICK_RADIUS = 18       # px - how close a click must be to count
-DOT_RADIUS = 7                  # px - visual size of each well marker
 
 STATE_DIR = "well_data"         # autosave folder (per-image JSON files)
 os.makedirs(STATE_DIR, exist_ok=True)
 
-PRESENT_COLOR = (46, 204, 113)  # green
-EMPTY_COLOR = (231, 76, 60)     # red
+PRESENT_FILL = (46, 204, 113)   # green
+EMPTY_FILL = (231, 76, 60)      # red
 CALIB_COLOR = (52, 152, 219)    # blue
+GRID_LINE = (0, 0, 0, 180)
 
 st.set_page_config(page_title="Mold Well Tracker", layout="wide")
 
@@ -56,8 +60,8 @@ st.set_page_config(page_title="Mold Well Tracker", layout="wide")
 # --------------------------------------------------------------------------
 
 def well_ids():
-    """All 120 well ids in row-major order: A1..A15, B1..B15, ... H1..H15."""
-    return [f"{ROW_LABELS[r]}{c + 1}" for r in range(ROWS) for c in range(COLS)]
+    """All 120 well ids: A1..O1, A2..O2, ... A8..O8 (row-major)."""
+    return [f"{COL_LABELS[c]}{r + 1}" for r in range(ROWS) for c in range(COLS)]
 
 
 def image_key(file_bytes: bytes) -> str:
@@ -103,50 +107,66 @@ def save_state(key: str, data: dict) -> bool:
 
 
 def default_calibration(img_w, img_h):
-    margin_x = img_w * 0.06
-    margin_y = img_h * 0.08
+    """Outer corners of the whole grid rectangle when nothing is calibrated."""
+    margin_x = img_w * 0.04
+    margin_y = img_h * 0.06
     return [[margin_x, margin_y], [img_w - margin_x, img_h - margin_y]]
 
 
-def compute_positions(calibration, img_w, img_h):
-    """Evenly interpolate 120 (x, y) points between two calibration corners."""
+def compute_cell_bounds(calibration, img_w, img_h):
+    """Divide the calibrated rectangle into COLS x ROWS equal cells.
+
+    Returns (bounds, grid_rect):
+      bounds     -> {well_id: (x0, y0, x1, y1)} pixel box for each cell
+      grid_rect  -> (x1, y1, x2, y2) outer edges of the whole grid
+    """
     if not calibration or len(calibration) != 2:
         calibration = default_calibration(img_w, img_h)
     (x1, y1), (x2, y2) = calibration
-    col_step = (x2 - x1) / (COLS - 1) if COLS > 1 else 0
-    row_step = (y2 - y1) / (ROWS - 1) if ROWS > 1 else 0
-    positions = {}
+    x1, x2 = min(x1, x2), max(x1, x2)
+    y1, y2 = min(y1, y2), max(y1, y2)
+    col_w = (x2 - x1) / COLS
+    row_h = (y2 - y1) / ROWS
+    bounds = {}
     for r in range(ROWS):
         for c in range(COLS):
-            wid = f"{ROW_LABELS[r]}{c + 1}"
-            positions[wid] = (x1 + c * col_step, y1 + r * row_step)
-    return positions
+            wid = f"{COL_LABELS[c]}{r + 1}"
+            cx0 = x1 + c * col_w
+            cy0 = y1 + r * row_h
+            bounds[wid] = (cx0, cy0, cx0 + col_w, cy0 + row_h)
+    return bounds, (x1, y1, x2, y2)
 
 
-def nearest_well(x, y, positions, max_dist):
-    best_id, best_d = None, None
-    for wid, (px, py) in positions.items():
-        d = math.hypot(px - x, py - y)
-        if best_d is None or d < best_d:
-            best_id, best_d = wid, d
-    return best_id if best_d is not None and best_d <= max_dist else None
+def find_cell(x, y, grid_rect):
+    """Return the well id whose cell contains point (x, y), or None if the
+    click landed outside the calibrated grid rectangle entirely."""
+    x1, y1, x2, y2 = grid_rect
+    if x < x1 or x > x2 or y < y1 or y > y2:
+        return None
+    col_w = (x2 - x1) / COLS
+    row_h = (y2 - y1) / ROWS
+    col = min(int((x - x1) // col_w), COLS - 1) if col_w > 0 else 0
+    row = min(int((y - y1) // row_h), ROWS - 1) if row_h > 0 else 0
+    return f"{COL_LABELS[col]}{row + 1}"
 
 
-def draw_overlay(base_img, positions, wells, show_labels, calibration_points=None):
-    img = base_img.convert("RGB").copy()
-    draw = ImageDraw.Draw(img)
+def draw_grid_overlay(base_img, bounds, wells, show_labels, calibration_points=None):
+    img = base_img.convert("RGBA")
+    layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
     font = ImageFont.load_default()
-    for wid, (x, y) in positions.items():
-        color = PRESENT_COLOR if wells.get(wid, "present") == "present" else EMPTY_COLOR
-        r = DOT_RADIUS
-        draw.ellipse([x - r, y - r, x + r, y + r], fill=color, outline=(0, 0, 0))
+    for wid, (x0, y0, x1, y1) in bounds.items():
+        present = wells.get(wid, "present") == "present"
+        fill = (*PRESENT_FILL, 80) if present else (*EMPTY_FILL, 130)
+        draw.rectangle([x0, y0, x1, y1], fill=fill, outline=GRID_LINE)
         if show_labels:
-            draw.text((x - r, y - r - 12), wid, fill=(0, 0, 0), font=font)
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            draw.text((cx, cy), wid, fill=(0, 0, 0, 255), font=font, anchor="mm")
     if calibration_points:
         for (x, y) in calibration_points:
-            r = DOT_RADIUS + 3
-            draw.ellipse([x - r, y - r, x + r, y + r], outline=CALIB_COLOR, width=3)
-    return img
+            r = 9
+            draw.ellipse([x - r, y - r, x + r, y + r], outline=(*CALIB_COLOR, 255), width=3)
+    return Image.alpha_composite(img, layer).convert("RGB")
 
 
 def resize_working(img: Image.Image, max_w: int) -> Image.Image:
@@ -162,8 +182,9 @@ def resize_working(img: Image.Image, max_w: int) -> Image.Image:
 
 st.title("🧫 Mold Well Tracker")
 st.caption(
-    f"Upload a mold photo, calibrate the {ROWS}x{COLS} grid once, then click "
-    "any well to mark it Empty / Present. Every click is saved automatically."
+    f"Upload a mold photo, calibrate the {COLS}x{ROWS} grid once, then click "
+    "anywhere inside a coordinate's cell to mark it Empty / Present. "
+    "Every click is saved automatically."
 )
 
 uploaded = st.file_uploader("Upload mold image", type=["png", "jpg", "jpeg"])
@@ -184,8 +205,7 @@ img_w, img_h = work_img.size
 with st.sidebar:
     st.header("Controls")
     mode = st.radio("Mode", ["Mark wells", "Calibrate grid"], index=0)
-    show_labels = st.checkbox("Show well labels", value=False)
-    click_radius = st.slider("Click sensitivity (px)", 8, 40, DEFAULT_CLICK_RADIUS)
+    show_labels = st.checkbox("Show cell labels", value=True)
 
     st.divider()
     present_count = sum(1 for v in state["wells"].values() if v == "present")
@@ -239,19 +259,20 @@ with st.sidebar:
         except (json.JSONDecodeError, KeyError):
             st.error("That file doesn't look like a valid state export.")
 
-positions = compute_positions(state["calibration"], img_w, img_h)
+bounds, grid_rect = compute_cell_bounds(state["calibration"], img_w, img_h)
 
 # ---- main panel ------------------------------------------------------
 if mode == "Calibrate grid":
     st.subheader("Step 1 — Calibrate the grid")
     st.write(
-        "Click the **center of well A1** (top-left), then click the "
-        f"**center of the last well** (bottom-right, {ROW_LABELS[-1]}{COLS}). "
-        "The 120-point grid will be evenly spaced between those two clicks. "
-        "Click again afterwards to re-calibrate from scratch."
+        "Click the **outer top-left corner of the grid** (just outside "
+        "coordinate A1), then click the **outer bottom-right corner** "
+        f"(just outside coordinate {COL_LABELS[-1]}{ROWS}). The rectangle "
+        f"between those two clicks is divided evenly into {COLS} x {ROWS} "
+        "cells. Click again afterwards to re-calibrate from scratch."
     )
     calib_points = state["calibration"] or []
-    overlay = draw_overlay(work_img, positions, state["wells"], show_labels, calib_points)
+    overlay = draw_grid_overlay(work_img, bounds, state["wells"], show_labels, calib_points)
     click = streamlit_image_coordinates(overlay, key=f"calib_{key}")
 
     last_key = f"last_calib_click_{key}"
@@ -270,11 +291,11 @@ if mode == "Calibrate grid":
     if state["calibration"] and len(state["calibration"]) == 2:
         st.success("Calibration complete — switch to 'Mark wells' in the sidebar.")
     elif state["calibration"] and len(state["calibration"]) == 1:
-        st.info("First point recorded. Now click the last well (bottom-right).")
+        st.info("First corner recorded. Now click the bottom-right outer corner.")
 
 else:
-    st.subheader("Click a well to toggle Present ⇄ Empty")
-    overlay = draw_overlay(work_img, positions, state["wells"], show_labels)
+    st.subheader("Click anywhere inside a coordinate's cell to toggle it")
+    overlay = draw_grid_overlay(work_img, bounds, state["wells"], show_labels)
     click = streamlit_image_coordinates(overlay, key=f"mark_{key}")
 
     last_key = f"last_mark_click_{key}"
@@ -282,17 +303,17 @@ else:
         click_sig = (click.get("x"), click.get("y"))
         if click_sig != (None, None) and st.session_state.get(last_key) != click_sig:
             st.session_state[last_key] = click_sig
-            wid = nearest_well(click_sig[0], click_sig[1], positions, click_radius)
+            wid = find_cell(click_sig[0], click_sig[1], grid_rect)
             if wid:
                 state["wells"][wid] = "empty" if state["wells"][wid] == "present" else "present"
                 save_state(key, state)
                 st.rerun()
             else:
-                st.toast("No well close enough to that click — try clicking closer to a dot.")
+                st.toast("That click landed outside the calibrated grid.")
 
 st.caption(
     f"Legend: 🟢 present &nbsp;&nbsp; 🔴 empty &nbsp;&nbsp; "
-    f"Grid: {ROWS} rows x {COLS} cols = {ROWS * COLS} wells."
+    f"Grid: {COLS} cols (A-{COL_LABELS[-1]}) x {ROWS} rows (1-{ROWS}) = {COLS * ROWS} wells."
 )
 
 with st.expander("Show empty well list"):
