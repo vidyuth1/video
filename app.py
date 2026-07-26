@@ -74,8 +74,21 @@ def well_ids():
 
 
 def file_signature(uploaded_file) -> str:
-    raw = f"{uploaded_file.name}:{uploaded_file.size}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+    """Unique identity for an uploaded file based on its actual content.
+
+    Reads the first 256 KB + last 256 KB (or the whole file if smaller)
+    and hashes those bytes together with the filename.  Fast on large images,
+    collision-proof for any realistic set of mold photos — including burst
+    shots from the same camera that share identical file sizes.
+    """
+    data = uploaded_file.getvalue()
+    chunk = 256 * 1024  # 256 KB
+    if len(data) <= chunk * 2:
+        sample = data
+    else:
+        sample = data[:chunk] + data[-chunk:]
+    raw = uploaded_file.name.encode() + sample
+    return hashlib.sha256(raw).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------
@@ -490,9 +503,21 @@ if len(uploaded_files) > MAX_IMAGES:
     )
     uploaded_files = uploaded_files[:MAX_IMAGES]
 
-sigs_and_names: list[tuple[str, str]] = [
-    (file_signature(f), f.name) for f in uploaded_files
-]
+# Build per-file signatures.  If two uploaded files produce the same content
+# hash (truly identical images), append the index so they remain distinct
+# slots — we never want two entries in sig_list to be the same string, because
+# that would make the dict lookups below collapse them into one.
+_raw_sigs = [file_signature(f) for f in uploaded_files]
+sigs_and_names: list[tuple[str, str]] = []
+_seen: dict[str, int] = {}
+for i, (raw_sig, f) in enumerate(zip(_raw_sigs, uploaded_files)):
+    if raw_sig in _seen:
+        unique_sig = f"{raw_sig}_{i}"   # make it unique by appending index
+    else:
+        unique_sig = raw_sig
+    _seen[raw_sig] = i
+    sigs_and_names.append((unique_sig, f.name))
+
 sig_to_file = {sig: f for (sig, _), f in zip(sigs_and_names, uploaded_files)}
 all_states: dict[str, dict] = {sig: load_state(sig) for sig, _ in sigs_and_names}
 sig_list  = [sig for sig, _ in sigs_and_names]
