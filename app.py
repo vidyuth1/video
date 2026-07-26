@@ -501,6 +501,21 @@ name_map  = {sig: name for sig, name in sigs_and_names}
 n_total = len(sig_list)
 
 # ---------------------------------------------------------------------------
+# Shared calibration: propagate image-0 calibration to all other images
+# ---------------------------------------------------------------------------
+# Calibration is done exactly once on the first image. Every subsequent image
+# automatically inherits those same corner coordinates so the user never has
+# to re-calibrate. Images that already have their own saved calibration keep
+# it (supports the edge-case where the user manually reset one image).
+first_sig  = sig_list[0]
+first_calib = all_states[first_sig].get("calibration")
+if first_calib and len(first_calib) == 2:
+    for sig in sig_list[1:]:
+        if not all_states[sig].get("calibration"):
+            all_states[sig]["calibration"] = first_calib
+            save_state(sig, all_states[sig])
+
+# ---------------------------------------------------------------------------
 # Session state: current image index
 # ---------------------------------------------------------------------------
 if "current_idx" not in st.session_state:
@@ -531,7 +546,7 @@ with tab_annotate:
     # --- Header row: image progress + nav buttons -------------------------
     h_col1, h_col2, h_col3 = st.columns([1, 4, 1])
     with h_col1:
-        if st.button("← Previous", disabled=(idx == 0), use_container_width=True):
+        if st.button("← Previous", key="btn_prev_top", disabled=(idx == 0), use_container_width=True):
             st.session_state.current_idx -= 1
             st.rerun()
     with h_col2:
@@ -543,7 +558,7 @@ with tab_annotate:
             unsafe_allow_html=True,
         )
     with h_col3:
-        if st.button("Next →", disabled=(idx == n_total - 1), use_container_width=True):
+        if st.button("Next →", key="btn_next_top", disabled=(idx == n_total - 1), use_container_width=True):
             st.session_state.current_idx += 1
             st.rerun()
 
@@ -562,11 +577,11 @@ with tab_annotate:
         c2.metric("Empty",   empty_count)
 
         st.divider()
-        if st.button("Reset all wells → Present", use_container_width=True):
+        if st.button("Reset all wells → Present", key="btn_reset_wells", use_container_width=True):
             active_state["wells"] = {w: "present" for w in well_ids()}
             save_state(active_sig, active_state)
             st.rerun()
-        if st.button("Reset calibration", use_container_width=True):
+        if st.button("Reset calibration", key="btn_reset_calib", use_container_width=True):
             active_state["calibration"] = None
             save_state(active_sig, active_state)
             st.rerun()
@@ -688,7 +703,7 @@ with tab_annotate:
         st.divider()
         nav1, nav2, nav3 = st.columns([1, 6, 1])
         with nav1:
-            if st.button("← Prev", disabled=(idx == 0), use_container_width=True):
+            if st.button("← Prev", key="btn_prev_bottom", disabled=(idx == 0), use_container_width=True):
                 st.session_state.current_idx -= 1
                 st.rerun()
         with nav2:
@@ -701,7 +716,7 @@ with tab_annotate:
                 progress_labels.append(f"{icon} {i+1}")
             st.caption("  ".join(progress_labels))
         with nav3:
-            if st.button("Next →", disabled=(idx == n_total - 1), use_container_width=True):
+            if st.button("Next →", key="btn_next_bottom", disabled=(idx == n_total - 1), use_container_width=True):
                 st.session_state.current_idx += 1
                 st.rerun()
 
