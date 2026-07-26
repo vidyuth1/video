@@ -133,8 +133,22 @@ def save_state(sig: str, data: dict) -> bool:
 # IMAGE DECODE — cached, lazy
 # ---------------------------------------------------------------------------
 
+# NOTE ON THE FIX:
+# st.cache_data excludes any parameter whose name starts with an underscore
+# from the cache key hash (this is how you tell Streamlit "don't hash this,
+# it's expensive/unhashable"). The original code prefixed BOTH `_file_bytes`
+# and `_sig` with underscores, which meant NEITHER contributed to the cache
+# key -- only `max_w` did, and `max_w` is always the same constant. Result:
+# the very first image decoded got cached, and every later call (for every
+# other image) just returned that same cached PNG, regardless of which file
+# was actually passed in.
+#
+# Fix: keep `_file_bytes` unhashed (it's just bytes, hashing it every call
+# would be wasteful), but let `sig` (no leading underscore) participate in
+# the cache key. `sig` is already a content hash of the uploaded file, so
+# it uniquely and cheaply identifies each image for caching purposes.
 @st.cache_data(max_entries=MAX_IMAGES, show_spinner=False)
-def _decode_and_resize(_file_bytes: bytes, _sig: str, max_w: int) -> bytes:
+def _decode_and_resize(_file_bytes: bytes, sig: str, max_w: int) -> bytes:
     img = Image.open(BytesIO(_file_bytes))
     if img.width > max_w:
         ratio = max_w / img.width
