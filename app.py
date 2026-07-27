@@ -763,6 +763,33 @@ with tab_annotate:
 
     # --- Sidebar controls -------------------------------------------------
     with st.sidebar:
+        # ---- Full reset: wipe everything and start from scratch ----------
+        if st.session_state.get("confirm_full_reset"):
+            st.error(
+                "This deletes ALL saved calibration and well data for "
+                "every image. This cannot be undone."
+            )
+            rc1, rc2 = st.columns(2)
+            with rc1:
+                if st.button("✅ Confirm reset", key="btn_confirm_reset", use_container_width=True, type="primary"):
+                    for fname in os.listdir(STATE_DIR):
+                        try:
+                            os.remove(os.path.join(STATE_DIR, fname))
+                        except OSError:
+                            pass
+                    for k in list(st.session_state.keys()):
+                        del st.session_state[k]
+                    st.rerun()
+            with rc2:
+                if st.button("Cancel", key="btn_cancel_reset", use_container_width=True):
+                    st.session_state["confirm_full_reset"] = False
+                    st.rerun()
+        else:
+            if st.button("🔄 Reset — start from scratch", key="btn_start_reset", use_container_width=True):
+                st.session_state["confirm_full_reset"] = True
+                st.rerun()
+
+        st.divider()
         st.header("Controls")
         show_labels = st.checkbox("Show cell labels", value=True)
 
@@ -833,39 +860,27 @@ with tab_annotate:
         st.subheader("🎯 Step 1 — Calibrate the grid")
 
         if active_calib is None:
-            # ---- Sub-step 0: configure grid layout (gap or no gap) ----
+            # ---- Sub-step 0: set where the gap falls ----
             st.info(
-                "This image needs calibration. First, tell us about the "
-                "grid layout."
-            )
-            st.markdown("**Does this plate have a physical gap between two blocks of rows?**")
-            st.caption(
-                "For example, two separate strips of wells with visible empty "
-                "space between them. If so, we'll ask for two extra clicks "
-                "to mark the gap so the bottom rows stay aligned."
+                "This image needs calibration. Every mold is laid out as two "
+                "row blocks with a physical gap between them — set which row "
+                "the gap comes after, then start calibration."
             )
 
-            prior_gap = st.session_state.get("gap_after_row_choice", 0)
-            has_gap = st.checkbox(
-                "This grid has a row gap",
-                value=(prior_gap > 0),
-                key=f"gap_has_{active_sig}",
+            prior_gap = st.session_state.get("gap_after_row_choice") or (ROWS // 2)
+            gap_after_row = st.number_input(
+                f"Gap occurs after row # (1–{ROWS - 1})",
+                min_value=1,
+                max_value=ROWS - 1,
+                value=prior_gap,
+                step=1,
+                key=f"gap_row_{active_sig}",
             )
-            gap_after_row = 0
-            if has_gap:
-                gap_after_row = st.number_input(
-                    f"Gap occurs after row # (1–{ROWS - 1})",
-                    min_value=1,
-                    max_value=ROWS - 1,
-                    value=prior_gap if prior_gap > 0 else ROWS // 2,
-                    step=1,
-                    key=f"gap_row_{active_sig}",
-                )
 
             st.image(work_img, use_container_width=True, caption="Preview (not yet calibrated)")
 
             if st.button("Start calibration ▶", key=f"start_calib_{active_sig}", type="primary"):
-                gap_after_row = int(gap_after_row) if has_gap else 0
+                gap_after_row = int(gap_after_row)
                 st.session_state["gap_after_row_choice"] = gap_after_row
                 active_state["calibration"] = {"gap_after_row": gap_after_row, "points": []}
                 save_state(active_sig, active_state)
