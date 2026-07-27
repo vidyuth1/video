@@ -110,8 +110,9 @@ def load_state(sig: str) -> dict:
             data = {}
     if "wells" not in data or set(data["wells"].keys()) != set(well_ids()):
         data["wells"] = {w: "present" for w in well_ids()}
-    if "calibration" not in data:
-        data["calibration"] = None
+    # Normalize calibration to the canonical dict form (upgrades legacy
+    # [[x1,y1],[x2,y2]] files saved before the gap-calibration feature).
+    data["calibration"] = normalize_calibration(data.get("calibration"))
     return data
 
 
@@ -167,6 +168,24 @@ def get_working_image(uploaded_file, sig: str) -> Image.Image:
 # ---------------------------------------------------------------------------
 # GRID MATH
 # ---------------------------------------------------------------------------
+#
+# CALIBRATION FORMATS
+# --------------------
+# "calibration" is stored per-image as either:
+#   - None                                          -> not yet calibrated
+#   - {"gap_after_row": 0, "points": [[x,y],[x,y]]}  -> simple uniform grid
+#       points = [outer top-left, outer bottom-right]
+#   - {"gap_after_row": N, "points": [4 points]}     -> gap-aware grid
+#       points = [outer top-left,
+#                 bottom edge of row N (end of block 1),
+#                 top edge of row N+1 (start of block 2),
+#                 outer bottom-right]
+#       Rows 1..N are spaced evenly within the block-1 band; rows N+1..ROWS
+#       are spaced evenly within the block-2 band. Anything between the two
+#       bands (the physical gap) maps to no well.
+#
+# Legacy files saved before the gap feature stored calibration as a plain
+# [[x1,y1],[x2,y2]] list -- normalize_calibration() upgrades those on load.
 
 def default_calibration(img_w: int, img_h: int):
     mx = img_w  * 0.04
@@ -174,38 +193,150 @@ def default_calibration(img_w: int, img_h: int):
     return [[mx, my], [img_w - mx, img_h - my]]
 
 
+def normalize_calibration(calibration) -> dict | None:
+    """Coerce any stored calibration (old list format or new dict format)
+    into the canonical {"gap_after_row": int, "points": [...]} shape, or
+    None if there's no calibration yet."""
+    if not calibration:
+        return None
+    if isinstance(calibration, list):
+        return {"gap_after_row": 0, "points": calibration}
+    if isinstance(calibration, dict):
+        return {
+            "gap_after_row": int(calibration.get("gap_after_row", 0) or 0),
+            "points": calibration.get("points", []),
+        }
+    return None
+
+
+def required_calibration_points(gap_after_row: int) -> int:
+    return 4 if gap_after_row > 0 else 2
+
+
+def calibration_instructions(gap_after_row: int) -> list[str]:
+    """Ordered instruction text, one entry per click still needed."""
+    if gap_after_row <= 0:
+        return [
+            "Click the **outer top-left corner** of the grid (just outside A1).",
+            f"Click the **outer bottom-right corner** of the grid "
+            f"(just outside {COL_LABELS[-1]}{ROWS}).",
+        ]
+    nxt = gap_after_row + 1
+    return [
+        "Click the **outer top-left corner** of the grid (just outside A1).",
+        f"Click just **below row {gap_after_row}** — the bottom edge of the "
+        f"last row before the gap (e.g. just below A{gap_after_row}).",
+        f"Click just **above row {nxt}** — the top edge of the first row "
+        f"after the gap (e.g. just above A{nxt}).",
+        f"Click the **outer bottom-right corner** of the grid "
+        f"(just outside {COL_LABELS[-1]}{ROWS}).",
+    ]
+
+
 def compute_cell_bounds(calibration, img_w: int, img_h: int):
-    if not calibration or len(calibration) != 2:
-        calibration = default_calibration(img_w, img_h)
-    (x1, y1), (x2, y2) = calibration
-    x1, x2 = min(x1, x2), max(x1, x2)
-    y1, y2 = min(y1, y2), max(y1, y2)
-    col_w = (x2 - x1) / COLS
-    row_h = (y2 - y1) / ROWS
+    """Returns (bounds, geometry).
+
+    bounds: dict of well-id -> (x0, y0, x1, y1) pixel rectangle, always 120 entries.
+    geometry: dict used by find_cell() -- {"x1","x2","col_w","bands":[...]}
+      Each band is {"y1","y2","row_h","row_start","row_count"}. One band for a
+      simple grid, two bands (with a gap between them) for a gap-aware grid.
+    """
+    calib = normalize_calibration(calibration)
+    gap_after_row = calib["gap_after_row"] if calib else 0
+    pts = calib["points"] if calib else []
+    req = required_calibration_points(gap_after_row)
+
+    if len(pts) < req:
+        # Not fully calibrated yet -- fall back to a default preview rectangle
+        # (uniform, no gap) so the UI has something sane to draw.
+        pts = default_calibration(img_w, img_h)
+        gap_after_row = 0
+
+    if gap_after_row <= 0:
+        (x1, y1), (x2, y2) = pts[0], pts[1]
+        x1, x2 = min(x1, x2), max(x1, x2)
+        y1, y2 = min(y1, y2), max(y1, y2)
+        col_w = (x2 - x1) / COLS
+        row_h = (y2 - y1) / ROWS
+        bounds = {}
+        for r in range(ROWS):
+            for c in range(COLS):
+                wid  = f"{COL_LABELS[c]}{r + 1}"
+                cx0  = x1 + c * col_w
+                cy0  = y1 + r * row_h
+                bounds[wid] = (cx0, cy0, cx0 + col_w, cy0 + row_h)
+        geometry = {
+            "x1": x1, "x2": x2, "col_w": col_w,
+            "bands": [
+                {"y1": y1, "y2": y2, "row_h": row_h, "row_start": 0, "row_count": ROWS}
+            ],
+        }
+        return bounds, geometry
+
+    # ---- Gap-aware grid: two independently-spaced row bands --------------
+    p1, p2, p3, p4 = pts
+    x1, x2 = min(p1[0], p4[0]), max(p1[0], p4[0])
+    y1a, y2a = sorted([p1[1], p2[1]])   # block 1 (rows 1..N): top / bottom
+    y1b, y2b = sorted([p3[1], p4[1]])   # block 2 (rows N+1..ROWS): top / bottom
+
+    row_count1 = gap_after_row
+    row_count2 = ROWS - gap_after_row
+    row_h1 = (y2a - y1a) / row_count1 if row_count1 > 0 else 0
+    row_h2 = (y2b - y1b) / row_count2 if row_count2 > 0 else 0
+    col_w  = (x2 - x1) / COLS
+
     bounds = {}
     for r in range(ROWS):
+        if r < row_count1:
+            y0  = y1a + r * row_h1
+            y1c = y0 + row_h1
+        else:
+            r2  = r - row_count1
+            y0  = y1b + r2 * row_h2
+            y1c = y0 + row_h2
         for c in range(COLS):
-            wid  = f"{COL_LABELS[c]}{r + 1}"
-            cx0  = x1 + c * col_w
-            cy0  = y1 + r * row_h
-            bounds[wid] = (cx0, cy0, cx0 + col_w, cy0 + row_h)
-    return bounds, (x1, y1, x2, y2)
+            wid = f"{COL_LABELS[c]}{r + 1}"
+            x0  = x1 + c * col_w
+            bounds[wid] = (x0, y0, x0 + col_w, y1c)
+
+    geometry = {
+        "x1": x1, "x2": x2, "col_w": col_w,
+        "bands": [
+            {"y1": y1a, "y2": y2a, "row_h": row_h1, "row_start": 0, "row_count": row_count1},
+            {"y1": y1b, "y2": y2b, "row_h": row_h2, "row_start": row_count1, "row_count": row_count2},
+        ],
+    }
+    return bounds, geometry
 
 
-def find_cell(x: float, y: float, grid_rect) -> str | None:
-    x1, y1, x2, y2 = grid_rect
-    if x < x1 or x > x2 or y < y1 or y > y2:
+def find_cell(x: float, y: float, geometry: dict) -> str | None:
+    """Resolve a click to a well id using the (possibly two-band) geometry.
+    Returns None if the click falls outside the grid entirely, OR inside the
+    physical gap between the two row blocks (there's no well there)."""
+    x1, x2, col_w = geometry["x1"], geometry["x2"], geometry["col_w"]
+    if x < x1 or x > x2:
         return None
-    col_w = (x2 - x1) / COLS
-    row_h = (y2 - y1) / ROWS
     col = min(int((x - x1) // col_w), COLS - 1) if col_w > 0 else 0
-    row = min(int((y - y1) // row_h), ROWS - 1) if row_h > 0 else 0
-    return f"{COL_LABELS[col]}{row + 1}"
+    for band in geometry["bands"]:
+        if band["y1"] <= y <= band["y2"]:
+            row_h = band["row_h"]
+            local_row = min(int((y - band["y1"]) // row_h), band["row_count"] - 1) if row_h > 0 else 0
+            row = band["row_start"] + local_row
+            return f"{COL_LABELS[col]}{row + 1}"
+    return None  # landed in the gap, or above/below the calibrated grid
 
 
 # ---------------------------------------------------------------------------
 # OVERLAY RENDERING
 # ---------------------------------------------------------------------------
+
+def _dashed_hline(draw, y, width, color, dash=10, gap=6):
+    x = 0
+    while x < width:
+        x_end = min(x + dash, width)
+        draw.line([(x, y), (x_end, y)], fill=color, width=2)
+        x += dash + gap
+
 
 def draw_grid_overlay(
     base_img: Image.Image,
@@ -213,11 +344,25 @@ def draw_grid_overlay(
     wells: dict,
     show_labels: bool,
     calib_points=None,
+    gap_after_row: int = 0,
+    gap_band=None,
 ) -> Image.Image:
+    """
+    gap_after_row: >0 while collecting the 4 gap-calibration points, used to
+        shade the in-progress gap band as points 2 and 3 are placed.
+    gap_band: (y_top, y_bottom) -- used in normal marking mode (once fully
+        calibrated) to shade the finalized gap region for visual context.
+    """
     img   = base_img.convert("RGBA")
     layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
     draw  = ImageDraw.Draw(layer)
     font  = ImageFont.load_default()
+
+    # Shade the finalized gap band (marking mode) so it's visually obvious
+    # why there are no clickable wells in that strip.
+    if gap_band is not None:
+        y_top, y_bot = sorted(gap_band)
+        draw.rectangle([0, y_top, img.width, y_bot], fill=(120, 120, 120, 55))
 
     for wid, (x0, y0, x1, y1) in bounds.items():
         present = wells.get(wid, "present") == "present"
@@ -228,13 +373,21 @@ def draw_grid_overlay(
             draw.text((cx, cy), wid, fill=(0, 0, 0, 255), font=font, anchor="mm")
 
     if calib_points:
-        for (x, y) in calib_points:
+        # While collecting the 2 middle gap points, shade the in-progress
+        # gap band so the user can see what they're marking.
+        if gap_after_row > 0 and len(calib_points) >= 3:
+            y_top, y_bot = sorted([calib_points[1][1], calib_points[2][1]])
+            draw.rectangle([0, y_top, img.width, y_bot], fill=(120, 120, 120, 70))
+
+        for i, (x, y) in enumerate(calib_points, start=1):
             r = 9
+            _dashed_hline(draw, y, img.width, (*CALIB_COLOR, 140))
             draw.ellipse(
                 [x - r, y - r, x + r, y + r],
                 outline=(*CALIB_COLOR, 255),
                 width=3,
             )
+            draw.text((x, y - r - 12), str(i), fill=(*CALIB_COLOR, 255), font=font, anchor="mm")
 
     return Image.alpha_composite(img, layer).convert("RGB")
 
@@ -546,13 +699,18 @@ n_total = len(sig_list)
 # automatically inherits those same corner coordinates so the user never has
 # to re-calibrate. Images that already have their own saved calibration keep
 # it (supports the edge-case where the user manually reset one image).
-first_sig  = sig_list[0]
-first_calib = all_states[first_sig].get("calibration")
-if first_calib and len(first_calib) == 2:
-    for sig in sig_list[1:]:
-        if not all_states[sig].get("calibration"):
-            all_states[sig]["calibration"] = first_calib
-            save_state(sig, all_states[sig])
+first_sig   = sig_list[0]
+first_calib = all_states[first_sig].get("calibration")  # already normalized dict or None
+if first_calib:
+    _req = required_calibration_points(first_calib.get("gap_after_row", 0))
+    if len(first_calib.get("points", [])) == _req:
+        for sig in sig_list[1:]:
+            if not all_states[sig].get("calibration"):
+                all_states[sig]["calibration"] = {
+                    "gap_after_row": first_calib["gap_after_row"],
+                    "points": list(first_calib["points"]),  # independent copy
+                }
+                save_state(sig, all_states[sig])
 
 # ---------------------------------------------------------------------------
 # Session state: current image index
@@ -580,7 +738,7 @@ with tab_annotate:
     # Decode active image only
     work_img     = get_working_image(active_file, active_sig)
     img_w, img_h = work_img.size
-    bounds, grid_rect = compute_cell_bounds(active_state["calibration"], img_w, img_h)
+    bounds, geometry = compute_cell_bounds(active_state["calibration"], img_w, img_h)
 
     # --- Header row: image progress + nav buttons -------------------------
     h_col1, h_col2, h_col3 = st.columns([1, 4, 1])
@@ -654,7 +812,7 @@ with tab_annotate:
                 if "wells" in restored:
                     active_state["wells"].update(restored["wells"])
                 if restored.get("calibration"):
-                    active_state["calibration"] = restored["calibration"]
+                    active_state["calibration"] = normalize_calibration(restored["calibration"])
                 save_state(active_sig, active_state)
                 st.success("State restored.")
                 st.rerun()
@@ -662,60 +820,122 @@ with tab_annotate:
                 st.error("Invalid state file.")
 
     # --- Auto-determine mode: calibrate first if not done -----------------
+    active_calib = active_state["calibration"]  # normalized dict or None
     needs_calibration = (
-        not active_state["calibration"]
-        or len(active_state["calibration"]) < 2
+        active_calib is None
+        or len(active_calib.get("points", [])) < required_calibration_points(
+            active_calib.get("gap_after_row", 0)
+        )
     )
 
     if needs_calibration:
         # ---- CALIBRATION MODE ----------------------------------------
         st.subheader("🎯 Step 1 — Calibrate the grid")
 
-        calib_pts = active_state.get("calibration") or []
-        if not calib_pts:
+        if active_calib is None:
+            # ---- Sub-step 0: configure grid layout (gap or no gap) ----
             st.info(
-                "This image needs calibration. "
-                "Click the **outer top-left corner** of the grid "
-                f"(just outside coordinate A1)."
+                "This image needs calibration. First, tell us about the "
+                "grid layout."
             )
-        else:
-            st.info(
-                "First corner recorded ✓  "
-                "Now click the **outer bottom-right corner** "
-                f"(just outside coordinate {COL_LABELS[-1]}{ROWS})."
+            st.markdown("**Does this plate have a physical gap between two blocks of rows?**")
+            st.caption(
+                "For example, two separate strips of wells with visible empty "
+                "space between them. If so, we'll ask for two extra clicks "
+                "to mark the gap so the bottom rows stay aligned."
             )
 
-        overlay = draw_grid_overlay(
-            work_img, bounds, active_state["wells"], show_labels, calib_pts
-        )
-        click = streamlit_image_coordinates(overlay, key=f"calib_{active_sig}")
+            prior_gap = st.session_state.get("gap_after_row_choice", 0)
+            has_gap = st.checkbox(
+                "This grid has a row gap",
+                value=(prior_gap > 0),
+                key=f"gap_has_{active_sig}",
+            )
+            gap_after_row = 0
+            if has_gap:
+                gap_after_row = st.number_input(
+                    f"Gap occurs after row # (1–{ROWS - 1})",
+                    min_value=1,
+                    max_value=ROWS - 1,
+                    value=prior_gap if prior_gap > 0 else ROWS // 2,
+                    step=1,
+                    key=f"gap_row_{active_sig}",
+                )
 
-        last_key = f"last_calib_click_{active_sig}"
-        if click is not None:
-            sig_xy = (click.get("x"), click.get("y"))
-            if sig_xy != (None, None) and st.session_state.get(last_key) != sig_xy:
-                st.session_state[last_key] = sig_xy
-                pts = active_state["calibration"] or []
-                if len(pts) >= 2:
-                    pts = []
-                pts.append([sig_xy[0], sig_xy[1]])
-                active_state["calibration"] = pts
+            st.image(work_img, use_container_width=True, caption="Preview (not yet calibrated)")
+
+            if st.button("Start calibration ▶", key=f"start_calib_{active_sig}", type="primary"):
+                gap_after_row = int(gap_after_row) if has_gap else 0
+                st.session_state["gap_after_row_choice"] = gap_after_row
+                active_state["calibration"] = {"gap_after_row": gap_after_row, "points": []}
                 save_state(active_sig, active_state)
                 st.rerun()
+
+        else:
+            # ---- Sub-step: collect the required clicks -----------------
+            gap_after_row = active_calib.get("gap_after_row", 0)
+            calib_pts = active_calib.get("points", [])
+            req = required_calibration_points(gap_after_row)
+            instructions = calibration_instructions(gap_after_row)
+
+            st.info(f"Point {len(calib_pts) + 1} of {req}: {instructions[len(calib_pts)]}")
+            if gap_after_row > 0:
+                st.caption(
+                    f"Layout: rows 1–{gap_after_row} in the upper block, "
+                    f"rows {gap_after_row + 1}–{ROWS} in the lower block, "
+                    "with a gap between them."
+                )
+
+            overlay = draw_grid_overlay(
+                work_img, bounds, active_state["wells"], show_labels,
+                calib_points=calib_pts, gap_after_row=gap_after_row,
+            )
+            click = streamlit_image_coordinates(overlay, key=f"calib_{active_sig}")
+
+            last_key = f"last_calib_click_{active_sig}"
+            if click is not None:
+                sig_xy = (click.get("x"), click.get("y"))
+                if sig_xy != (None, None) and st.session_state.get(last_key) != sig_xy:
+                    st.session_state[last_key] = sig_xy
+                    pts = list(calib_pts)
+                    if len(pts) >= req:
+                        pts = []  # safety net: start over if somehow overfull
+                    pts.append([sig_xy[0], sig_xy[1]])
+                    active_state["calibration"]["points"] = pts
+                    save_state(active_sig, active_state)
+                    st.rerun()
+
+            with st.expander("Restart calibration"):
+                st.caption("Clears the points you've placed so far for this image (keeps the gap setting).")
+                if st.button("Clear points and restart", key=f"restart_pts_{active_sig}"):
+                    active_state["calibration"] = {"gap_after_row": gap_after_row, "points": []}
+                    save_state(active_sig, active_state)
+                    st.rerun()
+                st.caption("Or change the gap layout entirely for this image:")
+                if st.button("Change gap layout", key=f"change_gap_{active_sig}"):
+                    active_state["calibration"] = None
+                    save_state(active_sig, active_state)
+                    st.rerun()
 
     else:
         # ---- MARK WELLS MODE -----------------------------------------
         st.subheader("Step 2 — Click a cell to toggle Empty / Present")
 
+        _active_gap = active_calib.get("gap_after_row", 0) if active_calib else 0
         col_info, col_nav = st.columns([5, 1])
         with col_info:
+            gap_note = f" &nbsp;·&nbsp; gap after row {_active_gap}" if _active_gap > 0 else ""
             st.caption(
                 f"🟢 present &nbsp; 🔴 empty &nbsp;·&nbsp; "
-                f"Grid: {COLS} cols (A–{COL_LABELS[-1]}) × {ROWS} rows"
+                f"Grid: {COLS} cols (A–{COL_LABELS[-1]}) × {ROWS} rows{gap_note}"
             )
 
+        gap_band = None
+        if len(geometry["bands"]) == 2:
+            gap_band = (geometry["bands"][0]["y2"], geometry["bands"][1]["y1"])
+
         overlay = draw_grid_overlay(
-            work_img, bounds, active_state["wells"], show_labels
+            work_img, bounds, active_state["wells"], show_labels, gap_band=gap_band
         )
         click = streamlit_image_coordinates(overlay, key=f"mark_{active_sig}")
 
@@ -724,7 +944,7 @@ with tab_annotate:
             sig_xy = (click.get("x"), click.get("y"))
             if sig_xy != (None, None) and st.session_state.get(last_key) != sig_xy:
                 st.session_state[last_key] = sig_xy
-                wid = find_cell(sig_xy[0], sig_xy[1], grid_rect)
+                wid = find_cell(sig_xy[0], sig_xy[1], geometry)
                 if wid:
                     current = active_state["wells"][wid]
                     active_state["wells"][wid] = "empty" if current == "present" else "present"
@@ -750,7 +970,8 @@ with tab_annotate:
             progress_labels = []
             for i, (s, n) in enumerate(sigs_and_names):
                 state_i = all_states[s]
-                calib_ok = state_i.get("calibration") and len(state_i["calibration"]) == 2
+                _c = state_i.get("calibration")
+                calib_ok = bool(_c) and len(_c.get("points", [])) >= required_calibration_points(_c.get("gap_after_row", 0))
                 icon = "✅" if calib_ok else "⏳"
                 progress_labels.append(f"{icon} {i+1}")
             st.caption("  ".join(progress_labels))
@@ -769,10 +990,14 @@ with tab_annotate:
 with tab_export:
 
     freq, n_images = compute_frequency(sigs_and_names)
-    n_calibrated = sum(
-        1 for sig, _ in sigs_and_names
-        if all_states[sig].get("calibration") and len(all_states[sig]["calibration"]) == 2
-    )
+
+    def _is_calibrated(sig):
+        c = all_states[sig].get("calibration")
+        if not c:
+            return False
+        return len(c.get("points", [])) >= required_calibration_points(c.get("gap_after_row", 0))
+
+    n_calibrated = sum(1 for sig, _ in sigs_and_names if _is_calibrated(sig))
 
     st.subheader(f"📊 Results Summary — {n_images} mold(s) uploaded, {n_calibrated} calibrated")
 
