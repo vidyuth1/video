@@ -408,6 +408,36 @@ def compute_frequency(sigs_and_names: list[tuple[str, str]]) -> dict:
     return freq, n_images
 
 
+# Green -> yellow -> orange -> red, evenly spaced at 0 / .33 / .66 / 1.0.
+# These are Excel's own conditional-formatting green/yellow/red plus an
+# orange midpoint, so the gradient matches native Excel color scales.
+_GRADIENT_CMAP = mcolors.LinearSegmentedColormap.from_list(
+    "green_yellow_orange_red",
+    ["#63BE7B", "#FFEB84", "#FFA500", "#F8696B"],
+)
+
+
+def gradient_hex(count: int, maximum: int) -> str:
+    """Map a count to a hex color along a green -> yellow -> orange -> red
+    scale (green = low/good, red = high/bad), matching the reference
+    heatmap and frequency-table styling. The Excel export and the
+    on-screen heatmap both draw from this same gradient so they stay
+    visually consistent."""
+    ratio = (count / maximum) if maximum > 0 else 0.0
+    ratio = max(0.0, min(1.0, ratio))
+    r, g, b, _a = _GRADIENT_CMAP(ratio)
+    return f"{int(round(r * 255)):02X}{int(round(g * 255)):02X}{int(round(b * 255)):02X}"
+
+
+def readable_text_hex(bg_hex: str) -> str:
+    """Pick black or white text for legibility against a given hex
+    background, based on perceptual luminance (rather than a fixed
+    threshold) so it works correctly across the whole green-to-red scale."""
+    r, g, b = int(bg_hex[0:2], 16), int(bg_hex[2:4], 16), int(bg_hex[4:6], 16)
+    luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+    return "000000" if luminance > 0.6 else "FFFFFF"
+
+
 def build_heatmap_figure(freq: dict, n_images: int) -> plt.Figure:
     """Build a matplotlib heatmap of missing-well frequency."""
     grid = np.zeros((ROWS, COLS), dtype=float)
@@ -417,7 +447,7 @@ def build_heatmap_figure(freq: dict, n_images: int) -> plt.Figure:
             grid[r, c] = freq.get(wid, 0)
 
     fig, ax = plt.subplots(figsize=(14, 6))
-    cmap = plt.cm.YlOrRd
+    cmap = _GRADIENT_CMAP  # green (low) -> yellow -> orange -> red (high)
     im = ax.imshow(grid, cmap=cmap, aspect="auto",
                    vmin=0, vmax=max(n_images, 1))
 
@@ -426,7 +456,8 @@ def build_heatmap_figure(freq: dict, n_images: int) -> plt.Figure:
         for c in range(COLS):
             val = int(grid[r, c])
             pct = (val / n_images * 100) if n_images > 0 else 0
-            color = "white" if val > n_images * 0.6 else "black"
+            text_hex = readable_text_hex(gradient_hex(val, max(n_images, 1)))
+            color = "white" if text_hex == "FFFFFF" else "black"
             ax.text(c, r, f"{val}\n({pct:.0f}%)", ha="center", va="center",
                     fontsize=7, color=color, fontweight="bold")
 
@@ -498,17 +529,6 @@ def build_excel_export(freq: dict, n_images: int) -> bytes:
     # Max frequency for color scaling
     max_freq = max(freq.values()) if freq else 1
 
-    def freq_to_hex(count, maximum):
-        """Map count → red gradient hex (white=0, deep red=max)."""
-        if maximum == 0:
-            return "FFFFFF"
-        ratio = count / maximum
-        # White (255,255,255) → Red (231,76,60)
-        r = int(255 - ratio * (255 - 231))
-        g = int(255 - ratio * (255 - 76))
-        b = int(255 - ratio * (255 - 60))
-        return f"{r:02X}{g:02X}{b:02X}"
-
     # Data rows (rows 3..10 → grid rows 1..8)
     for r_idx in range(ROWS):
         row_num = r_idx + 3
@@ -526,13 +546,13 @@ def build_excel_export(freq: dict, n_images: int) -> bytes:
             wid   = f"{COL_LABELS[c_idx]}{r_idx + 1}"
             count = freq.get(wid, 0)
             pct   = (count / n_images * 100) if n_images > 0 else 0
-            hex_color = freq_to_hex(count, max_freq)
+            hex_color = gradient_hex(count, max_freq)
 
             data_cell = ws_heat.cell(row=row_num, column=c_idx + 2)
             data_cell.value = f"{count} ({pct:.0f}%)"
             data_cell.font  = Font(
                 name="Arial", size=8, bold=count > 0,
-                color="FFFFFF" if count > max_freq * 0.6 else "000000"
+                color=readable_text_hex(hex_color)
             )
             data_cell.fill  = PatternFill("solid", fgColor=hex_color)
             data_cell.alignment = center
@@ -550,7 +570,8 @@ def build_excel_export(freq: dict, n_images: int) -> bytes:
     note.value = (
         f"Each cell shows: count of molds where this coordinate was missing "
         f"(percentage of {n_images} total molds). "
-        f"Color intensity reflects frequency — deeper red = missing more often."
+        f"Color follows a green → yellow → orange → red scale: "
+        f"green = rarely missing, red = frequently missing."
     )
     note.font = Font(name="Arial", italic=True, size=9, color="555555")
     note.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
@@ -590,8 +611,8 @@ def build_excel_export(freq: dict, n_images: int) -> bytes:
         col_letter = wid[0]
         row_number = wid[1:]
 
-        hex_color = freq_to_hex(count, max_freq)
-        text_color = "FFFFFF" if count > max_freq * 0.6 else "000000"
+        hex_color = gradient_hex(count, max_freq)
+        text_color = readable_text_hex(hex_color)
 
         vals = [wid, col_letter, row_number, count, round(pct, 1)]
         for col_i, val in enumerate(vals, start=1):
