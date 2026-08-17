@@ -216,16 +216,38 @@ section[data-testid="stSidebar"] h3 {
     box-shadow: var(--shadow-sm) !important;
 }
 
-/* Primary buttons */
+/* Primary buttons — used for Previous/Next navigation and key actions */
 .stButton > button[kind="primary"] {
-    background-color: var(--accent) !important;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
     color: #FFFFFF !important;
     border-color: var(--accent) !important;
+    font-weight: 700 !important;
+    font-size: 0.95rem !important;
+    padding: 0.6rem 1.3rem !important;
+    box-shadow: 0 2px 8px rgba(29, 78, 216, 0.35) !important;
+    transform: translateY(0);
+    transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.15s !important;
 }
 
 .stButton > button[kind="primary"]:hover {
-    background-color: var(--accent-hover) !important;
+    background: linear-gradient(135deg, var(--accent-hover) 0%, var(--accent) 100%) !important;
     border-color: var(--accent-hover) !important;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 14px rgba(29, 78, 216, 0.45) !important;
+}
+
+.stButton > button[kind="primary"]:active {
+    transform: translateY(0);
+    box-shadow: 0 1px 4px rgba(29, 78, 216, 0.35) !important;
+}
+
+.stButton > button[kind="primary"]:disabled {
+    background: var(--border-medium) !important;
+    color: var(--bg-surface) !important;
+    border-color: var(--border-medium) !important;
+    box-shadow: none !important;
+    transform: none !important;
+    opacity: 0.55;
 }
 
 /* ===========================================================
@@ -247,36 +269,51 @@ section[data-testid="stSidebar"] h3 {
 }
 
 /* ===========================================================
-   TABS
+   TABS — pill-style, more visually distinct
    =========================================================== */
 .stTabs [data-baseweb="tab-list"] {
-    border-bottom: 1px solid var(--border-subtle) !important;
-    gap: 0;
-    background: transparent !important;
+    border-bottom: none !important;
+    gap: 0.4rem;
+    background: var(--bg-surface-alt) !important;
+    padding: 0.35rem !important;
+    border-radius: 10px !important;
+    border: 1px solid var(--border-subtle) !important;
+    width: fit-content;
 }
 
 .stTabs [data-baseweb="tab"] {
-    font-size: 0.875rem !important;
-    font-weight: 500 !important;
+    font-size: 0.9rem !important;
+    font-weight: 600 !important;
     color: var(--text-muted) !important;
-    padding: 0.65rem 1.1rem !important;
-    border-radius: 0 !important;
-    border-bottom: 2px solid transparent !important;
+    padding: 0.55rem 1.2rem !important;
+    border-radius: 7px !important;
+    border-bottom: none !important;
     background: transparent !important;
     letter-spacing: 0 !important;
+    transition: background 0.15s, color 0.15s !important;
+}
+
+.stTabs [data-baseweb="tab"]:hover {
+    color: var(--text-primary) !important;
+    background: var(--bg-surface) !important;
 }
 
 .stTabs [aria-selected="true"] {
-    color: var(--accent) !important;
-    border-bottom-color: var(--accent) !important;
-    font-weight: 600 !important;
-    background: transparent !important;
+    color: #FFFFFF !important;
+    background: var(--accent) !important;
+    font-weight: 700 !important;
+    box-shadow: var(--shadow-sm) !important;
+}
+
+.stTabs [aria-selected="true"]:hover {
+    color: #FFFFFF !important;
+    background: var(--accent-hover) !important;
 }
 
 /* Tab panel — keep transparent so page bg shows */
 .stTabs [data-baseweb="tab-panel"] {
     background: transparent !important;
-    padding-top: 1.5rem;
+    padding-top: 1.75rem;
 }
 
 /* ===========================================================
@@ -737,7 +774,16 @@ def build_heatmap_figure(freq: dict, n_images: int) -> plt.Figure:
             wid = f"{COL_LABELS[c]}{r + 1}"
             grid[r, c] = freq.get(wid, 0)
 
-    fig, ax = plt.subplots(figsize=(14, 6))
+    # Size the figure to match the grid's own proportions (plus a little
+    # room for labels/title/colorbar) so constrained_layout doesn't have to
+    # invent extra whitespace to fill an oversized canvas.
+    cell_w, cell_h = 0.82, 0.68
+    fig_w = COLS * cell_w + 2.0
+    fig_h = ROWS * cell_h + 2.1
+
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), constrained_layout=True)
+    fig.set_constrained_layout_pads(w_pad=0.05, h_pad=0.05, hspace=0, wspace=0)
+
     cmap = _GRADIENT_CMAP
     im = ax.imshow(grid, cmap=cmap, aspect="auto",
                    vmin=0, vmax=max(n_images, 1))
@@ -765,7 +811,6 @@ def build_heatmap_figure(freq: dict, n_images: int) -> plt.Figure:
 
     cbar = fig.colorbar(im, ax=ax, shrink=0.8)
     cbar.set_label("# Times Missing", fontsize=9)
-    plt.tight_layout()
     return fig
 
 
@@ -1006,7 +1051,7 @@ st.session_state.current_idx = max(0, min(st.session_state.current_idx, n_total 
 # ---------------------------------------------------------------------------
 # Top navigation tabs
 # ---------------------------------------------------------------------------
-tab_annotate, tab_export = st.tabs(["Annotate Images", "Export Results"])
+tab_annotate, tab_export = st.tabs(["📷 Annotate Images", "📊 Export Results"])
 
 # ===========================================================================
 # TAB 1 — ANNOTATE
@@ -1025,7 +1070,8 @@ with tab_annotate:
     # --- Header row -------------------------------------------------------
     h_col1, h_col2, h_col3 = st.columns([1, 4, 1])
     with h_col1:
-        if st.button("Previous", key="btn_prev_top", disabled=(idx == 0), use_container_width=True):
+        if st.button("← Previous", key="btn_prev_top", disabled=(idx == 0),
+                     use_container_width=True, type="primary"):
             st.session_state.current_idx -= 1
             st.rerun()
     with h_col2:
@@ -1040,7 +1086,8 @@ with tab_annotate:
             unsafe_allow_html=True,
         )
     with h_col3:
-        if st.button("Next", key="btn_next_top", disabled=(idx == n_total - 1), use_container_width=True):
+        if st.button("Next →", key="btn_next_top", disabled=(idx == n_total - 1),
+                     use_container_width=True, type="primary"):
             st.session_state.current_idx += 1
             st.rerun()
 
@@ -1255,7 +1302,8 @@ with tab_annotate:
         st.divider()
         nav1, nav2, nav3 = st.columns([1, 6, 1])
         with nav1:
-            if st.button("Previous", key="btn_prev_bottom", disabled=(idx == 0), use_container_width=True):
+            if st.button("← Previous", key="btn_prev_bottom", disabled=(idx == 0),
+                         use_container_width=True, type="primary"):
                 st.session_state.current_idx -= 1
                 st.rerun()
         with nav2:
@@ -1268,7 +1316,8 @@ with tab_annotate:
                 progress_labels.append(f"{status_marker} {i + 1}")
             st.caption("  ".join(progress_labels))
         with nav3:
-            if st.button("Next", key="btn_next_bottom", disabled=(idx == n_total - 1), use_container_width=True):
+            if st.button("Next →", key="btn_next_bottom", disabled=(idx == n_total - 1),
+                         use_container_width=True, type="primary"):
                 st.session_state.current_idx += 1
                 st.rerun()
 
@@ -1302,19 +1351,23 @@ with tab_export:
             "Color intensity indicates how often each coordinate was marked empty "
             "across all analyzed molds."
         )
-        fig = build_heatmap_figure(freq, n_images)
-        st.pyplot(fig, use_container_width=True)
-        plt.close(fig)
 
+        # Render once to a tightly-cropped PNG buffer and reuse those bytes
+        # for both the on-screen preview and the download button, so what
+        # you see always matches what you download (no extra whitespace).
+        fig = build_heatmap_figure(freq, n_images)
         heatmap_buf = BytesIO()
-        fig2 = build_heatmap_figure(freq, n_images)
-        fig2.savefig(heatmap_buf, format="PNG", dpi=150, bbox_inches="tight")
-        plt.close(fig2)
+        fig.savefig(heatmap_buf, format="PNG", dpi=150, bbox_inches="tight",
+                    facecolor="white")
+        plt.close(fig)
         heatmap_buf.seek(0)
+        heatmap_bytes = heatmap_buf.getvalue()
+
+        st.image(heatmap_bytes, use_container_width=True)
 
         st.download_button(
             "Download Heatmap (PNG)",
-            heatmap_buf.getvalue(),
+            heatmap_bytes,
             file_name="mold_heatmap.png",
             mime="image/png",
             use_container_width=False,
