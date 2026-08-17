@@ -1,6 +1,6 @@
 """
-Mold Well Tracker
-=================
+Mold Coordinate Tracker
+=======================
 Streamlit app that lets you upload up to 40 photos of molds (or plates) laid
 out as a 15 x 8 grid (120 coordinates), auto-prompts calibration on the first
 image, then steps through each image with Next/Previous buttons.
@@ -14,10 +14,10 @@ How it works
 3. Click the OUTER TOP-LEFT corner of the grid (just outside A1), then the
    OUTER BOTTOM-RIGHT corner (just outside O8). That rectangle is divided
    evenly into 15 × 8 cells.
-4. After calibration the mode switches to "Mark wells". Click ANYWHERE inside
-   a cell to toggle it between Present (green) and Empty (red). Every click is
-   written to disk immediately.
-5. Click "Next →" to move to the next image (or "← Previous" to go back).
+4. After calibration the mode switches to "Mark coordinates". Click ANYWHERE
+   inside a cell to toggle it between Present (green) and Empty (red). Every
+   click is written to disk immediately.
+5. Click "Next" to move to the next image (or "Previous" to go back).
 6. After all images are reviewed, use the Export tab to download:
    - A heatmap image showing missing-coordinate frequency across all molds.
    - An Excel workbook with two sheets: the heatmap data and a frequency table.
@@ -61,7 +61,240 @@ EMPTY_FILL   = (231, 76,  60)
 CALIB_COLOR  = (52,  152, 219)
 GRID_LINE    = (0,   0,   0, 180)
 
-st.set_page_config(page_title="Mold Well Tracker", layout="wide")
+st.set_page_config(page_title="Mold Coordinate Tracker", layout="wide")
+
+# ---------------------------------------------------------------------------
+# PROFESSIONAL STYLING — injected once at startup
+# ---------------------------------------------------------------------------
+st.markdown("""
+<style>
+/* ── Google Font import ── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* ── Global typography ── */
+html, body, [class*="css"] {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    letter-spacing: -0.01em;
+}
+
+/* ── Page background ── */
+.stApp {
+    background-color: #F7F8FA;
+}
+
+/* ── Main content area ── */
+.main .block-container {
+    padding-top: 2.5rem;
+    padding-bottom: 3rem;
+    max-width: 1100px;
+}
+
+/* ── Page title ── */
+h1 {
+    font-size: 1.65rem !important;
+    font-weight: 700 !important;
+    color: #111827 !important;
+    letter-spacing: -0.03em !important;
+    margin-bottom: 0.15rem !important;
+}
+
+/* ── Section headings ── */
+h2, h3 {
+    font-weight: 600 !important;
+    color: #1F2937 !important;
+    letter-spacing: -0.02em !important;
+}
+
+/* ── Caption / meta text ── */
+.stCaption, small {
+    color: #6B7280 !important;
+    font-size: 0.82rem !important;
+}
+
+/* ── Sidebar ── */
+section[data-testid="stSidebar"] {
+    background-color: #FFFFFF;
+    border-right: 1px solid #E5E7EB;
+}
+
+section[data-testid="stSidebar"] .block-container {
+    padding-top: 2rem;
+}
+
+section[data-testid="stSidebar"] h1,
+section[data-testid="stSidebar"] h2,
+section[data-testid="stSidebar"] h3 {
+    font-size: 0.85rem !important;
+    font-weight: 600 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.06em !important;
+    color: #9CA3AF !important;
+}
+
+/* ── Buttons ── */
+.stButton > button {
+    border-radius: 6px !important;
+    font-weight: 500 !important;
+    font-size: 0.84rem !important;
+    letter-spacing: 0em !important;
+    border: 1px solid #D1D5DB !important;
+    background-color: #FFFFFF !important;
+    color: #374151 !important;
+    transition: background 0.15s, border-color 0.15s, box-shadow 0.15s !important;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
+    padding: 0.35rem 0.9rem !important;
+}
+
+.stButton > button:hover {
+    background-color: #F3F4F6 !important;
+    border-color: #9CA3AF !important;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08) !important;
+}
+
+.stButton > button[kind="primary"] {
+    background-color: #1D4ED8 !important;
+    color: #FFFFFF !important;
+    border-color: #1D4ED8 !important;
+}
+
+.stButton > button[kind="primary"]:hover {
+    background-color: #1E40AF !important;
+    border-color: #1E40AF !important;
+}
+
+/* ── Download buttons ── */
+.stDownloadButton > button {
+    border-radius: 6px !important;
+    font-weight: 500 !important;
+    font-size: 0.84rem !important;
+    border: 1px solid #D1D5DB !important;
+    background-color: #FFFFFF !important;
+    color: #374151 !important;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
+}
+
+.stDownloadButton > button:hover {
+    background-color: #F9FAFB !important;
+    border-color: #9CA3AF !important;
+}
+
+/* ── Tabs ── */
+.stTabs [data-baseweb="tab-list"] {
+    border-bottom: 1px solid #E5E7EB;
+    gap: 0;
+}
+
+.stTabs [data-baseweb="tab"] {
+    font-size: 0.875rem !important;
+    font-weight: 500 !important;
+    color: #6B7280 !important;
+    padding: 0.65rem 1.1rem !important;
+    border-radius: 0 !important;
+    border-bottom: 2px solid transparent !important;
+    background: transparent !important;
+    letter-spacing: 0 !important;
+}
+
+.stTabs [aria-selected="true"] {
+    color: #1D4ED8 !important;
+    border-bottom-color: #1D4ED8 !important;
+    font-weight: 600 !important;
+}
+
+/* ── Info / warning / success banners ── */
+.stAlert {
+    border-radius: 6px !important;
+    font-size: 0.875rem !important;
+    border-left-width: 3px !important;
+}
+
+/* ── Metrics ── */
+[data-testid="metric-container"] {
+    background: #FFFFFF;
+    border: 1px solid #E5E7EB;
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+
+[data-testid="metric-container"] [data-testid="stMetricValue"] {
+    font-size: 1.5rem !important;
+    font-weight: 700 !important;
+    color: #111827 !important;
+}
+
+[data-testid="metric-container"] [data-testid="stMetricLabel"] {
+    font-size: 0.75rem !important;
+    font-weight: 600 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.06em !important;
+    color: #6B7280 !important;
+}
+
+/* ── Progress bar ── */
+.stProgress > div > div {
+    border-radius: 99px !important;
+    height: 3px !important;
+    background-color: #E5E7EB !important;
+}
+
+.stProgress > div > div > div {
+    background-color: #1D4ED8 !important;
+    border-radius: 99px !important;
+}
+
+/* ── File uploader ── */
+[data-testid="stFileUploader"] {
+    border-radius: 8px !important;
+}
+
+[data-testid="stFileUploader"] section {
+    border: 1.5px dashed #D1D5DB !important;
+    border-radius: 8px !important;
+    background: #FFFFFF !important;
+}
+
+/* ── Dataframe / table ── */
+.stDataFrame {
+    border: 1px solid #E5E7EB !important;
+    border-radius: 8px !important;
+    overflow: hidden;
+}
+
+/* ── Dividers ── */
+hr {
+    border-color: #E5E7EB !important;
+    margin: 1rem 0 !important;
+}
+
+/* ── Checkbox ── */
+.stCheckbox label {
+    font-size: 0.875rem !important;
+    color: #374151 !important;
+}
+
+/* ── Number input ── */
+.stNumberInput input {
+    border-radius: 6px !important;
+    border-color: #D1D5DB !important;
+    font-size: 0.875rem !important;
+}
+
+/* ── Expander ── */
+.streamlit-expanderHeader {
+    font-size: 0.875rem !important;
+    font-weight: 500 !important;
+    color: #374151 !important;
+}
+
+/* ── Suppress Streamlit rainbow top bar ── */
+header[data-testid="stHeader"] {
+    background: rgba(247, 248, 250, 0.95) !important;
+    border-bottom: 1px solid #E5E7EB !important;
+    backdrop-filter: blur(4px);
+}
+</style>
+""", unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -74,13 +307,7 @@ def well_ids():
 
 
 def file_signature(uploaded_file) -> str:
-    """Unique identity for an uploaded file based on its actual content.
-
-    Reads the first 256 KB + last 256 KB (or the whole file if smaller)
-    and hashes those bytes together with the filename.  Fast on large images,
-    collision-proof for any realistic set of mold photos — including burst
-    shots from the same camera that share identical file sizes.
-    """
+    """Unique identity for an uploaded file based on its actual content."""
     data = uploaded_file.getvalue()
     chunk = 256 * 1024  # 256 KB
     if len(data) <= chunk * 2:
@@ -110,8 +337,6 @@ def load_state(sig: str) -> dict:
             data = {}
     if "wells" not in data or set(data["wells"].keys()) != set(well_ids()):
         data["wells"] = {w: "present" for w in well_ids()}
-    # Normalize calibration to the canonical dict form (upgrades legacy
-    # [[x1,y1],[x2,y2]] files saved before the gap-calibration feature).
     data["calibration"] = normalize_calibration(data.get("calibration"))
     return data
 
@@ -124,8 +349,7 @@ def save_state(sig: str, data: dict) -> bool:
     except OSError:
         st.warning(
             "Could not write autosave file (read-only filesystem?). "
-            "Your changes are kept for this session.",
-            icon="⚠️",
+            "Your changes are kept for this session."
         )
         return False
 
@@ -134,20 +358,6 @@ def save_state(sig: str, data: dict) -> bool:
 # IMAGE DECODE — cached, lazy
 # ---------------------------------------------------------------------------
 
-# NOTE ON THE FIX:
-# st.cache_data excludes any parameter whose name starts with an underscore
-# from the cache key hash (this is how you tell Streamlit "don't hash this,
-# it's expensive/unhashable"). The original code prefixed BOTH `_file_bytes`
-# and `_sig` with underscores, which meant NEITHER contributed to the cache
-# key -- only `max_w` did, and `max_w` is always the same constant. Result:
-# the very first image decoded got cached, and every later call (for every
-# other image) just returned that same cached PNG, regardless of which file
-# was actually passed in.
-#
-# Fix: keep `_file_bytes` unhashed (it's just bytes, hashing it every call
-# would be wasteful), but let `sig` (no leading underscore) participate in
-# the cache key. `sig` is already a content hash of the uploaded file, so
-# it uniquely and cheaply identifies each image for caching purposes.
 @st.cache_data(max_entries=MAX_IMAGES, show_spinner=False)
 def _decode_and_resize(_file_bytes: bytes, sig: str, max_w: int) -> bytes:
     img = Image.open(BytesIO(_file_bytes))
@@ -168,24 +378,6 @@ def get_working_image(uploaded_file, sig: str) -> Image.Image:
 # ---------------------------------------------------------------------------
 # GRID MATH
 # ---------------------------------------------------------------------------
-#
-# CALIBRATION FORMATS
-# --------------------
-# "calibration" is stored per-image as either:
-#   - None                                          -> not yet calibrated
-#   - {"gap_after_row": 0, "points": [[x,y],[x,y]]}  -> simple uniform grid
-#       points = [outer top-left, outer bottom-right]
-#   - {"gap_after_row": N, "points": [4 points]}     -> gap-aware grid
-#       points = [outer top-left,
-#                 bottom edge of row N (end of block 1),
-#                 top edge of row N+1 (start of block 2),
-#                 outer bottom-right]
-#       Rows 1..N are spaced evenly within the block-1 band; rows N+1..ROWS
-#       are spaced evenly within the block-2 band. Anything between the two
-#       bands (the physical gap) maps to no well.
-#
-# Legacy files saved before the gap feature stored calibration as a plain
-# [[x1,y1],[x2,y2]] list -- normalize_calibration() upgrades those on load.
 
 def default_calibration(img_w: int, img_h: int):
     mx = img_w  * 0.04
@@ -194,9 +386,6 @@ def default_calibration(img_w: int, img_h: int):
 
 
 def normalize_calibration(calibration) -> dict | None:
-    """Coerce any stored calibration (old list format or new dict format)
-    into the canonical {"gap_after_row": int, "points": [...]} shape, or
-    None if there's no calibration yet."""
     if not calibration:
         return None
     if isinstance(calibration, list):
@@ -214,7 +403,6 @@ def required_calibration_points(gap_after_row: int) -> int:
 
 
 def calibration_instructions(gap_after_row: int) -> list[str]:
-    """Ordered instruction text, one entry per click still needed."""
     if gap_after_row <= 0:
         return [
             "Click the **outer top-left corner** of the grid (just outside A1).",
@@ -234,21 +422,12 @@ def calibration_instructions(gap_after_row: int) -> list[str]:
 
 
 def compute_cell_bounds(calibration, img_w: int, img_h: int):
-    """Returns (bounds, geometry).
-
-    bounds: dict of well-id -> (x0, y0, x1, y1) pixel rectangle, always 120 entries.
-    geometry: dict used by find_cell() -- {"x1","x2","col_w","bands":[...]}
-      Each band is {"y1","y2","row_h","row_start","row_count"}. One band for a
-      simple grid, two bands (with a gap between them) for a gap-aware grid.
-    """
     calib = normalize_calibration(calibration)
     gap_after_row = calib["gap_after_row"] if calib else 0
     pts = calib["points"] if calib else []
     req = required_calibration_points(gap_after_row)
 
     if len(pts) < req:
-        # Not fully calibrated yet -- fall back to a default preview rectangle
-        # (uniform, no gap) so the UI has something sane to draw.
         pts = default_calibration(img_w, img_h)
         gap_after_row = 0
 
@@ -273,11 +452,10 @@ def compute_cell_bounds(calibration, img_w: int, img_h: int):
         }
         return bounds, geometry
 
-    # ---- Gap-aware grid: two independently-spaced row bands --------------
     p1, p2, p3, p4 = pts
     x1, x2 = min(p1[0], p4[0]), max(p1[0], p4[0])
-    y1a, y2a = sorted([p1[1], p2[1]])   # block 1 (rows 1..N): top / bottom
-    y1b, y2b = sorted([p3[1], p4[1]])   # block 2 (rows N+1..ROWS): top / bottom
+    y1a, y2a = sorted([p1[1], p2[1]])
+    y1b, y2b = sorted([p3[1], p4[1]])
 
     row_count1 = gap_after_row
     row_count2 = ROWS - gap_after_row
@@ -310,9 +488,6 @@ def compute_cell_bounds(calibration, img_w: int, img_h: int):
 
 
 def find_cell(x: float, y: float, geometry: dict) -> str | None:
-    """Resolve a click to a well id using the (possibly two-band) geometry.
-    Returns None if the click falls outside the grid entirely, OR inside the
-    physical gap between the two row blocks (there's no well there)."""
     x1, x2, col_w = geometry["x1"], geometry["x2"], geometry["col_w"]
     if x < x1 or x > x2:
         return None
@@ -323,7 +498,7 @@ def find_cell(x: float, y: float, geometry: dict) -> str | None:
             local_row = min(int((y - band["y1"]) // row_h), band["row_count"] - 1) if row_h > 0 else 0
             row = band["row_start"] + local_row
             return f"{COL_LABELS[col]}{row + 1}"
-    return None  # landed in the gap, or above/below the calibrated grid
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -347,19 +522,11 @@ def draw_grid_overlay(
     gap_after_row: int = 0,
     gap_band=None,
 ) -> Image.Image:
-    """
-    gap_after_row: >0 while collecting the 4 gap-calibration points, used to
-        shade the in-progress gap band as points 2 and 3 are placed.
-    gap_band: (y_top, y_bottom) -- used in normal marking mode (once fully
-        calibrated) to shade the finalized gap region for visual context.
-    """
     img   = base_img.convert("RGBA")
     layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
     draw  = ImageDraw.Draw(layer)
     font  = ImageFont.load_default()
 
-    # Shade the finalized gap band (marking mode) so it's visually obvious
-    # why there are no clickable wells in that strip.
     if gap_band is not None:
         y_top, y_bot = sorted(gap_band)
         draw.rectangle([0, y_top, img.width, y_bot], fill=(120, 120, 120, 55))
@@ -373,8 +540,6 @@ def draw_grid_overlay(
             draw.text((cx, cy), wid, fill=(0, 0, 0, 255), font=font, anchor="mm")
 
     if calib_points:
-        # While collecting the 2 middle gap points, shade the in-progress
-        # gap band so the user can see what they're marking.
         if gap_after_row > 0 and len(calib_points) >= 3:
             y_top, y_bot = sorted([calib_points[1][1], calib_points[2][1]])
             draw.rectangle([0, y_top, img.width, y_bot], fill=(120, 120, 120, 70))
@@ -397,7 +562,6 @@ def draw_grid_overlay(
 # ---------------------------------------------------------------------------
 
 def compute_frequency(sigs_and_names: list[tuple[str, str]]) -> dict:
-    """Count how many images have each well marked empty."""
     freq = {w: 0 for w in well_ids()}
     n_images = len(sigs_and_names)
     for sig, _ in sigs_and_names:
@@ -408,9 +572,6 @@ def compute_frequency(sigs_and_names: list[tuple[str, str]]) -> dict:
     return freq, n_images
 
 
-# Green -> yellow -> orange -> red, evenly spaced at 0 / .33 / .66 / 1.0.
-# These are Excel's own conditional-formatting green/yellow/red plus an
-# orange midpoint, so the gradient matches native Excel color scales.
 _GRADIENT_CMAP = mcolors.LinearSegmentedColormap.from_list(
     "green_yellow_orange_red",
     ["#63BE7B", "#FFEB84", "#FFA500", "#F8696B"],
@@ -418,11 +579,6 @@ _GRADIENT_CMAP = mcolors.LinearSegmentedColormap.from_list(
 
 
 def gradient_hex(count: int, maximum: int) -> str:
-    """Map a count to a hex color along a green -> yellow -> orange -> red
-    scale (green = low/good, red = high/bad), matching the reference
-    heatmap and frequency-table styling. The Excel export and the
-    on-screen heatmap both draw from this same gradient so they stay
-    visually consistent."""
     ratio = (count / maximum) if maximum > 0 else 0.0
     ratio = max(0.0, min(1.0, ratio))
     r, g, b, _a = _GRADIENT_CMAP(ratio)
@@ -430,16 +586,12 @@ def gradient_hex(count: int, maximum: int) -> str:
 
 
 def readable_text_hex(bg_hex: str) -> str:
-    """Pick black or white text for legibility against a given hex
-    background, based on perceptual luminance (rather than a fixed
-    threshold) so it works correctly across the whole green-to-red scale."""
     r, g, b = int(bg_hex[0:2], 16), int(bg_hex[2:4], 16), int(bg_hex[4:6], 16)
     luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
     return "000000" if luminance > 0.6 else "FFFFFF"
 
 
 def build_heatmap_figure(freq: dict, n_images: int) -> plt.Figure:
-    """Build a matplotlib heatmap of missing-well frequency."""
     grid = np.zeros((ROWS, COLS), dtype=float)
     for r in range(ROWS):
         for c in range(COLS):
@@ -447,11 +599,10 @@ def build_heatmap_figure(freq: dict, n_images: int) -> plt.Figure:
             grid[r, c] = freq.get(wid, 0)
 
     fig, ax = plt.subplots(figsize=(14, 6))
-    cmap = _GRADIENT_CMAP  # green (low) -> yellow -> orange -> red (high)
+    cmap = _GRADIENT_CMAP
     im = ax.imshow(grid, cmap=cmap, aspect="auto",
                    vmin=0, vmax=max(n_images, 1))
 
-    # Annotate each cell with count and %
     for r in range(ROWS):
         for c in range(COLS):
             val = int(grid[r, c])
@@ -480,11 +631,6 @@ def build_heatmap_figure(freq: dict, n_images: int) -> plt.Figure:
 
 
 def build_excel_export(freq: dict, n_images: int) -> bytes:
-    """
-    Build a two-sheet Excel workbook:
-      Sheet 1 – Heatmap (color-coded grid of missing frequency)
-      Sheet 2 – Frequency Table (coordinate, count, %)
-    """
     wb = openpyxl.Workbook()
 
     # ---- SHEET 1: Heatmap ------------------------------------------------
@@ -499,7 +645,6 @@ def build_excel_export(freq: dict, n_images: int) -> bytes:
     cell_font    = Font(name="Arial", size=9)
     center       = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-    # Title row
     ws_heat.merge_cells("A1:Q1")
     title_cell = ws_heat["A1"]
     title_cell.value = f"Missing Coordinate Frequency Heatmap — {n_images} Mold(s) Analyzed"
@@ -509,7 +654,6 @@ def build_excel_export(freq: dict, n_images: int) -> bytes:
     title_cell.font = Font(name="Arial", bold=True, size=13, color="FFFFFF")
     ws_heat.row_dimensions[1].height = 30
 
-    # Sub-header row (column letters A-O in columns B-P, row 2)
     ws_heat["A2"].value = "Row \\ Col"
     ws_heat["A2"].font  = header_font
     ws_heat["A2"].fill  = PatternFill("solid", fgColor="34495E")
@@ -526,15 +670,12 @@ def build_excel_export(freq: dict, n_images: int) -> bytes:
 
     ws_heat.row_dimensions[2].height = 22
 
-    # Max frequency for color scaling
     max_freq = max(freq.values()) if freq else 1
 
-    # Data rows (rows 3..10 → grid rows 1..8)
     for r_idx in range(ROWS):
         row_num = r_idx + 3
         ws_heat.row_dimensions[row_num].height = 28
 
-        # Row label
         label_cell = ws_heat.cell(row=row_num, column=1)
         label_cell.value = str(r_idx + 1)
         label_cell.font  = label_font
@@ -558,12 +699,10 @@ def build_excel_export(freq: dict, n_images: int) -> bytes:
             data_cell.alignment = center
             data_cell.border = border
 
-    # Column widths
     ws_heat.column_dimensions["A"].width = 10
     for c_idx in range(COLS):
         ws_heat.column_dimensions[get_column_letter(c_idx + 2)].width = 10
 
-    # Legend note
     note_row = ROWS + 4
     ws_heat.merge_cells(f"A{note_row}:Q{note_row}")
     note = ws_heat.cell(row=note_row, column=1)
@@ -580,7 +719,6 @@ def build_excel_export(freq: dict, n_images: int) -> bytes:
     # ---- SHEET 2: Frequency Table ----------------------------------------
     ws_table = wb.create_sheet("Frequency Table")
 
-    # Title
     ws_table.merge_cells("A1:E1")
     t = ws_table["A1"]
     t.value = f"Coordinate Flag Frequency Table — {n_images} Mold(s) Analyzed"
@@ -589,7 +727,6 @@ def build_excel_export(freq: dict, n_images: int) -> bytes:
     t.alignment = Alignment(horizontal="center", vertical="center")
     ws_table.row_dimensions[1].height = 30
 
-    # Column headers
     headers = ["Coordinate", "Column", "Row", "Times Missing", "% Missing"]
     header_fills = ["34495E"] * 5
     for col_i, (h, fill) in enumerate(zip(headers, header_fills), start=1):
@@ -601,7 +738,6 @@ def build_excel_export(freq: dict, n_images: int) -> bytes:
         cell.border = border
     ws_table.row_dimensions[2].height = 22
 
-    # Data — sorted by frequency descending
     all_wids = well_ids()
     sorted_wids = sorted(all_wids, key=lambda w: -freq.get(w, 0))
 
@@ -621,28 +757,25 @@ def build_excel_export(freq: dict, n_images: int) -> bytes:
             cell.border = border
             cell.alignment = center
 
-            if col_i == 4:  # Times Missing
+            if col_i == 4:
                 cell.fill = PatternFill("solid", fgColor=hex_color)
                 cell.font = Font(name="Arial", size=10, bold=True, color=text_color)
-            elif col_i == 5:  # % Missing
+            elif col_i == 5:
                 cell.fill = PatternFill("solid", fgColor=hex_color)
                 cell.font = Font(name="Arial", size=10, color=text_color)
                 cell.number_format = "0.0%"
-                cell.value = pct / 100  # store as fraction for proper % format
+                cell.value = pct / 100
             else:
                 cell.font = Font(name="Arial", size=10)
-                # Alternate row shading
                 if row_i % 2 == 0:
                     cell.fill = PatternFill("solid", fgColor="F8F9FA")
 
         ws_table.row_dimensions[row_i].height = 18
 
-    # Column widths
     col_widths = [14, 10, 8, 16, 14]
     for col_i, w in enumerate(col_widths, start=1):
         ws_table.column_dimensions[get_column_letter(col_i)].width = w
 
-    # Summary footer
     footer_row = len(sorted_wids) + 4
     ws_table.merge_cells(f"A{footer_row}:E{footer_row}")
     footer = ws_table.cell(row=footer_row, column=1)
@@ -664,10 +797,10 @@ def build_excel_export(freq: dict, n_images: int) -> bytes:
 # UI
 # ===========================================================================
 
-st.title("🧫 Mold Well Tracker")
+st.title("Mold Coordinate Tracker")
 st.caption(
-    f"Upload up to {MAX_IMAGES} mold photos. The app will guide you through "
-    "calibrating and marking each image, then export a frequency heatmap."
+    f"Upload up to {MAX_IMAGES} mold photos. Calibrate the grid on the first image, "
+    "mark coordinates on each subsequent image, then export a frequency heatmap."
 )
 
 # ---------------------------------------------------------------------------
@@ -687,20 +820,15 @@ if len(uploaded_files) > MAX_IMAGES:
     st.warning(
         f"You uploaded {len(uploaded_files)} images but the limit is {MAX_IMAGES}. "
         f"Only the first {MAX_IMAGES} will be used.",
-        icon="⚠️",
     )
     uploaded_files = uploaded_files[:MAX_IMAGES]
 
-# Build per-file signatures.  If two uploaded files produce the same content
-# hash (truly identical images), append the index so they remain distinct
-# slots — we never want two entries in sig_list to be the same string, because
-# that would make the dict lookups below collapse them into one.
 _raw_sigs = [file_signature(f) for f in uploaded_files]
 sigs_and_names: list[tuple[str, str]] = []
 _seen: dict[str, int] = {}
 for i, (raw_sig, f) in enumerate(zip(_raw_sigs, uploaded_files)):
     if raw_sig in _seen:
-        unique_sig = f"{raw_sig}_{i}"   # make it unique by appending index
+        unique_sig = f"{raw_sig}_{i}"
     else:
         unique_sig = raw_sig
     _seen[raw_sig] = i
@@ -714,14 +842,10 @@ name_map  = {sig: name for sig, name in sigs_and_names}
 n_total = len(sig_list)
 
 # ---------------------------------------------------------------------------
-# Shared calibration: propagate image-0 calibration to all other images
+# Shared calibration
 # ---------------------------------------------------------------------------
-# Calibration is done exactly once on the first image. Every subsequent image
-# automatically inherits those same corner coordinates so the user never has
-# to re-calibrate. Images that already have their own saved calibration keep
-# it (supports the edge-case where the user manually reset one image).
 first_sig   = sig_list[0]
-first_calib = all_states[first_sig].get("calibration")  # already normalized dict or None
+first_calib = all_states[first_sig].get("calibration")
 if first_calib:
     _req = required_calibration_points(first_calib.get("gap_after_row", 0))
     if len(first_calib.get("points", [])) == _req:
@@ -729,7 +853,7 @@ if first_calib:
             if not all_states[sig].get("calibration"):
                 all_states[sig]["calibration"] = {
                     "gap_after_row": first_calib["gap_after_row"],
-                    "points": list(first_calib["points"]),  # independent copy
+                    "points": list(first_calib["points"]),
                 }
                 save_state(sig, all_states[sig])
 
@@ -738,13 +862,12 @@ if first_calib:
 # ---------------------------------------------------------------------------
 if "current_idx" not in st.session_state:
     st.session_state.current_idx = 0
-# Clamp in case files changed
 st.session_state.current_idx = max(0, min(st.session_state.current_idx, n_total - 1))
 
 # ---------------------------------------------------------------------------
-# Top navigation tabs: Annotation | Export
+# Top navigation tabs
 # ---------------------------------------------------------------------------
-tab_annotate, tab_export = st.tabs(["📷 Annotate Images", "📊 Export Results"])
+tab_annotate, tab_export = st.tabs(["Annotate Images", "Export Results"])
 
 # ===========================================================================
 # TAB 1 — ANNOTATE
@@ -756,43 +879,44 @@ with tab_annotate:
     active_file  = sig_to_file[active_sig]
     active_state = all_states[active_sig]
 
-    # Decode active image only
     work_img     = get_working_image(active_file, active_sig)
     img_w, img_h = work_img.size
     bounds, geometry = compute_cell_bounds(active_state["calibration"], img_w, img_h)
 
-    # --- Header row: image progress + nav buttons -------------------------
+    # --- Header row -------------------------------------------------------
     h_col1, h_col2, h_col3 = st.columns([1, 4, 1])
     with h_col1:
-        if st.button("← Previous", key="btn_prev_top", disabled=(idx == 0), use_container_width=True):
+        if st.button("Previous", key="btn_prev_top", disabled=(idx == 0), use_container_width=True):
             st.session_state.current_idx -= 1
             st.rerun()
     with h_col2:
         st.markdown(
-            f"<div style='text-align:center;font-size:1.05rem;padding-top:6px;'>"
-            f"<b>Image {idx + 1} of {n_total}</b> &nbsp;·&nbsp; "
-            f"<code>{name_map[active_sig]}</code>"
+            f"<div style='text-align:center;font-size:0.9rem;padding-top:6px;"
+            f"color:#6B7280;font-family:Inter,sans-serif;'>"
+            f"<span style='font-weight:600;color:#111827;'>Image {idx + 1} of {n_total}</span>"
+            f"&nbsp;&nbsp;·&nbsp;&nbsp;"
+            f"<code style='background:#F3F4F6;padding:2px 6px;border-radius:4px;"
+            f"font-size:0.82rem;color:#374151;'>{name_map[active_sig]}</code>"
             f"</div>",
             unsafe_allow_html=True,
         )
     with h_col3:
-        if st.button("Next →", key="btn_next_top", disabled=(idx == n_total - 1), use_container_width=True):
+        if st.button("Next", key="btn_next_top", disabled=(idx == n_total - 1), use_container_width=True):
             st.session_state.current_idx += 1
             st.rerun()
 
     st.progress((idx + 1) / n_total)
 
-    # --- Sidebar controls -------------------------------------------------
+    # --- Sidebar ----------------------------------------------------------
     with st.sidebar:
-        # ---- Full reset: wipe everything and start from scratch ----------
         if st.session_state.get("confirm_full_reset"):
             st.error(
-                "This deletes ALL saved calibration and well data for "
+                "This deletes ALL saved calibration and coordinate data for "
                 "every image. This cannot be undone."
             )
             rc1, rc2 = st.columns(2)
             with rc1:
-                if st.button("✅ Confirm reset", key="btn_confirm_reset", use_container_width=True, type="primary"):
+                if st.button("Confirm reset", key="btn_confirm_reset", use_container_width=True, type="primary"):
                     for fname in os.listdir(STATE_DIR):
                         try:
                             os.remove(os.path.join(STATE_DIR, fname))
@@ -806,13 +930,13 @@ with tab_annotate:
                     st.session_state["confirm_full_reset"] = False
                     st.rerun()
         else:
-            if st.button("🔄 Reset — start from scratch", key="btn_start_reset", use_container_width=True):
+            if st.button("Reset — start from scratch", key="btn_start_reset", use_container_width=True):
                 st.session_state["confirm_full_reset"] = True
                 st.rerun()
 
         st.divider()
         st.header("Controls")
-        show_labels = st.checkbox("Show cell labels", value=True)
+        show_labels = st.checkbox("Show coordinate labels", value=True)
 
         st.divider()
         present_count = sum(1 for v in active_state["wells"].values() if v == "present")
@@ -822,7 +946,7 @@ with tab_annotate:
         c2.metric("Empty",   empty_count)
 
         st.divider()
-        if st.button("Reset all wells → Present", key="btn_reset_wells", use_container_width=True):
+        if st.button("Reset all coordinates to Present", key="btn_reset_wells", use_container_width=True):
             active_state["wells"] = {w: "present" for w in well_ids()}
             save_state(active_sig, active_state)
             st.rerun()
@@ -867,8 +991,8 @@ with tab_annotate:
             except (json.JSONDecodeError, KeyError):
                 st.error("Invalid state file.")
 
-    # --- Auto-determine mode: calibrate first if not done -----------------
-    active_calib = active_state["calibration"]  # normalized dict or None
+    # --- Mode: calibrate or mark ------------------------------------------
+    active_calib = active_state["calibration"]
     needs_calibration = (
         active_calib is None
         or len(active_calib.get("points", [])) < required_calibration_points(
@@ -878,14 +1002,12 @@ with tab_annotate:
 
     if needs_calibration:
         # ---- CALIBRATION MODE ----------------------------------------
-        st.subheader("🎯 Step 1 — Calibrate the grid")
+        st.subheader("Step 1 — Calibrate the grid")
 
         if active_calib is None:
-            # ---- Sub-step 0: set where the gap falls ----
             st.info(
-                "This image needs calibration. Every mold is laid out as two "
-                "row blocks with a physical gap between them — set which row "
-                "the gap comes after, then start calibration."
+                "This image needs calibration. Set which row the gap falls after, "
+                "then follow the on-screen prompts to place the corner points."
             )
 
             prior_gap = st.session_state.get("gap_after_row_choice") or (ROWS // 2)
@@ -898,9 +1020,9 @@ with tab_annotate:
                 key=f"gap_row_{active_sig}",
             )
 
-            st.image(work_img, use_container_width=True, caption="Preview (not yet calibrated)")
+            st.image(work_img, use_container_width=True, caption="Preview — not yet calibrated")
 
-            if st.button("Start calibration ▶", key=f"start_calib_{active_sig}", type="primary"):
+            if st.button("Start calibration", key=f"start_calib_{active_sig}", type="primary"):
                 gap_after_row = int(gap_after_row)
                 st.session_state["gap_after_row_choice"] = gap_after_row
                 active_state["calibration"] = {"gap_after_row": gap_after_row, "points": []}
@@ -908,7 +1030,6 @@ with tab_annotate:
                 st.rerun()
 
         else:
-            # ---- Sub-step: collect the required clicks -----------------
             gap_after_row = active_calib.get("gap_after_row", 0)
             calib_pts = active_calib.get("points", [])
             req = required_calibration_points(gap_after_row)
@@ -935,14 +1056,14 @@ with tab_annotate:
                     st.session_state[last_key] = sig_xy
                     pts = list(calib_pts)
                     if len(pts) >= req:
-                        pts = []  # safety net: start over if somehow overfull
+                        pts = []
                     pts.append([sig_xy[0], sig_xy[1]])
                     active_state["calibration"]["points"] = pts
                     save_state(active_sig, active_state)
                     st.rerun()
 
             with st.expander("Restart calibration"):
-                st.caption("Clears the points you've placed so far for this image (keeps the gap setting).")
+                st.caption("Clears the points placed so far for this image (keeps the gap setting).")
                 if st.button("Clear points and restart", key=f"restart_pts_{active_sig}"):
                     active_state["calibration"] = {"gap_after_row": gap_after_row, "points": []}
                     save_state(active_sig, active_state)
@@ -954,17 +1075,15 @@ with tab_annotate:
                     st.rerun()
 
     else:
-        # ---- MARK WELLS MODE -----------------------------------------
+        # ---- MARK COORDINATES MODE -----------------------------------
         st.subheader("Step 2 — Click a cell to toggle Empty / Present")
 
         _active_gap = active_calib.get("gap_after_row", 0) if active_calib else 0
-        col_info, col_nav = st.columns([5, 1])
-        with col_info:
-            gap_note = f" &nbsp;·&nbsp; gap after row {_active_gap}" if _active_gap > 0 else ""
-            st.caption(
-                f"🟢 present &nbsp; 🔴 empty &nbsp;·&nbsp; "
-                f"Grid: {COLS} cols (A–{COL_LABELS[-1]}) × {ROWS} rows{gap_note}"
-            )
+        gap_note = f"  ·  gap after row {_active_gap}" if _active_gap > 0 else ""
+        st.caption(
+            f"Green = present   Red = empty   ·   "
+            f"Grid: {COLS} columns (A–{COL_LABELS[-1]}) × {ROWS} rows{gap_note}"
+        )
 
         gap_band = None
         if len(geometry["bands"]) == 2:
@@ -989,35 +1108,33 @@ with tab_annotate:
                 else:
                     st.toast("Click landed outside the calibrated grid.")
 
-        # Quick empty-well list
-        with st.expander("Show empty well list"):
+        with st.expander("Show empty coordinate list"):
             empty_wells = [w for w, s in active_state["wells"].items() if s == "empty"]
-            st.write(", ".join(empty_wells) if empty_wells else "None marked empty yet.")
+            st.write(", ".join(empty_wells) if empty_wells else "No coordinates marked empty yet.")
 
         # Bottom navigation
         st.divider()
         nav1, nav2, nav3 = st.columns([1, 6, 1])
         with nav1:
-            if st.button("← Prev", key="btn_prev_bottom", disabled=(idx == 0), use_container_width=True):
+            if st.button("Previous", key="btn_prev_bottom", disabled=(idx == 0), use_container_width=True):
                 st.session_state.current_idx -= 1
                 st.rerun()
         with nav2:
-            # Image thumbnail strip
             progress_labels = []
             for i, (s, n) in enumerate(sigs_and_names):
                 state_i = all_states[s]
                 _c = state_i.get("calibration")
                 calib_ok = bool(_c) and len(_c.get("points", [])) >= required_calibration_points(_c.get("gap_after_row", 0))
-                icon = "✅" if calib_ok else "⏳"
-                progress_labels.append(f"{icon} {i+1}")
+                status_marker = "[done]" if calib_ok else "[pending]"
+                progress_labels.append(f"{status_marker} {i + 1}")
             st.caption("  ".join(progress_labels))
         with nav3:
-            if st.button("Next →", key="btn_next_bottom", disabled=(idx == n_total - 1), use_container_width=True):
+            if st.button("Next", key="btn_next_bottom", disabled=(idx == n_total - 1), use_container_width=True):
                 st.session_state.current_idx += 1
                 st.rerun()
 
             if idx == n_total - 1:
-                st.success("All images reviewed! Head to the **Export Results** tab.")
+                st.success("All images reviewed. Open the Export Results tab to download your report.")
 
 
 # ===========================================================================
@@ -1035,7 +1152,7 @@ with tab_export:
 
     n_calibrated = sum(1 for sig, _ in sigs_and_names if _is_calibrated(sig))
 
-    st.subheader(f"📊 Results Summary — {n_images} mold(s) uploaded, {n_calibrated} calibrated")
+    st.subheader(f"Results — {n_images} mold(s) uploaded, {n_calibrated} calibrated")
 
     if n_images == 0:
         st.info("No images uploaded yet.")
@@ -1043,14 +1160,13 @@ with tab_export:
         # ---- Heatmap preview -------------------------------------------
         st.markdown("### Missing Coordinate Frequency Heatmap")
         st.caption(
-            "Color intensity shows how often each coordinate was marked empty "
+            "Color intensity indicates how often each coordinate was marked empty "
             "across all analyzed molds."
         )
         fig = build_heatmap_figure(freq, n_images)
         st.pyplot(fig, use_container_width=True)
         plt.close(fig)
 
-        # Save heatmap as PNG for download
         heatmap_buf = BytesIO()
         fig2 = build_heatmap_figure(freq, n_images)
         fig2.savefig(heatmap_buf, format="PNG", dpi=150, bbox_inches="tight")
@@ -1058,7 +1174,7 @@ with tab_export:
         heatmap_buf.seek(0)
 
         st.download_button(
-            "⬇️ Download Heatmap (PNG)",
+            "Download Heatmap (PNG)",
             heatmap_buf.getvalue(),
             file_name="mold_heatmap.png",
             mime="image/png",
@@ -1067,7 +1183,7 @@ with tab_export:
 
         st.divider()
 
-        # ---- Frequency table preview ------------------------------------
+        # ---- Frequency table -------------------------------------------
         st.markdown("### Coordinate Flag Frequency Table")
         rows = []
         for wid in well_ids():
@@ -1096,18 +1212,18 @@ with tab_export:
 
         st.divider()
 
-        # ---- Excel export -----------------------------------------------
+        # ---- Excel export ----------------------------------------------
         st.markdown("### Download Excel Report")
         st.caption(
-            "The Excel workbook contains two sheets: **Heatmap** (color-coded grid) "
-            "and **Frequency Table** (sorted list of all 120 coordinates)."
+            "The workbook contains two sheets: Heatmap (color-coded grid) "
+            "and Frequency Table (all 120 coordinates sorted by missing frequency)."
         )
 
         excel_bytes = build_excel_export(freq, n_images)
         st.download_button(
-            "⬇️ Download Excel Report (.xlsx)",
+            "Download Excel Report (.xlsx)",
             excel_bytes,
-            file_name="mold_well_analysis.xlsx",
+            file_name="mold_coordinate_analysis.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=False,
         )
