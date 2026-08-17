@@ -64,57 +64,120 @@ GRID_LINE    = (0,   0,   0, 180)
 st.set_page_config(page_title="Mold Coordinate Tracker", layout="wide")
 
 # ---------------------------------------------------------------------------
-# PROFESSIONAL STYLING — injected once at startup
+# ADAPTIVE STYLING — light mode, dark mode, and responsive breakpoints
 # ---------------------------------------------------------------------------
 st.markdown("""
 <style>
-/* ── Google Font import ── */
+/* ── Google Font ── */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
-/* ── Global typography ── */
+/* ===========================================================
+   TOKEN SYSTEM  —  light mode defaults
+   =========================================================== */
+:root {
+    /* Surfaces */
+    --bg-page:        #F7F8FA;
+    --bg-surface:     #FFFFFF;
+    --bg-surface-alt: #F3F4F6;
+    --bg-sidebar:     #FFFFFF;
+
+    /* Borders */
+    --border-subtle:  #E5E7EB;
+    --border-medium:  #D1D5DB;
+    --border-strong:  #9CA3AF;
+
+    /* Text */
+    --text-primary:   #111827;
+    --text-secondary: #374151;
+    --text-muted:     #6B7280;
+    --text-faint:     #9CA3AF;
+
+    /* Accent (blue) */
+    --accent:         #1D4ED8;
+    --accent-hover:   #1E40AF;
+    --accent-subtle:  #EFF6FF;
+
+    /* Shadows (light) */
+    --shadow-xs:      0 1px 2px rgba(0,0,0,0.05);
+    --shadow-sm:      0 1px 4px rgba(0,0,0,0.08);
+}
+
+/* ===========================================================
+   TOKEN OVERRIDES — dark mode
+   =========================================================== */
+@media (prefers-color-scheme: dark) {
+    :root {
+        /* Surfaces */
+        --bg-page:        #0F1117;
+        --bg-surface:     #1A1D27;
+        --bg-surface-alt: #252836;
+        --bg-sidebar:     #161923;
+
+        /* Borders */
+        --border-subtle:  #2D3142;
+        --border-medium:  #3D4258;
+        --border-strong:  #5A607A;
+
+        /* Text */
+        --text-primary:   #F1F3F9;
+        --text-secondary: #CBD5E1;
+        --text-muted:     #8892A4;
+        --text-faint:     #5A607A;
+
+        /* Accent — slightly lighter blue for dark backgrounds */
+        --accent:         #4F83F0;
+        --accent-hover:   #6B9BF5;
+        --accent-subtle:  #1E2A45;
+
+        /* Shadows (dark — keep subtle) */
+        --shadow-xs:      0 1px 2px rgba(0,0,0,0.25);
+        --shadow-sm:      0 1px 4px rgba(0,0,0,0.35);
+    }
+}
+
+/* ===========================================================
+   GLOBAL TYPOGRAPHY
+   =========================================================== */
 html, body, [class*="css"] {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
     letter-spacing: -0.01em;
 }
 
-/* ── Page background ── */
+/* ===========================================================
+   PAGE LAYOUT
+   =========================================================== */
 .stApp {
-    background-color: #F7F8FA;
+    background-color: var(--bg-page) !important;
 }
 
-/* ── Main content area ── */
 .main .block-container {
     padding-top: 2.5rem;
     padding-bottom: 3rem;
     max-width: 1100px;
 }
 
-/* ── Page title ── */
+/* ===========================================================
+   HEADINGS  — defer text color to Streamlit's own theming;
+   only adjust weight/tracking to avoid overriding dark mode.
+   =========================================================== */
 h1 {
     font-size: 1.65rem !important;
     font-weight: 700 !important;
-    color: #111827 !important;
     letter-spacing: -0.03em !important;
     margin-bottom: 0.15rem !important;
 }
 
-/* ── Section headings ── */
 h2, h3 {
     font-weight: 600 !important;
-    color: #1F2937 !important;
     letter-spacing: -0.02em !important;
 }
 
-/* ── Caption / meta text ── */
-.stCaption, small {
-    color: #6B7280 !important;
-    font-size: 0.82rem !important;
-}
-
-/* ── Sidebar ── */
+/* ===========================================================
+   SIDEBAR
+   =========================================================== */
 section[data-testid="stSidebar"] {
-    background-color: #FFFFFF;
-    border-right: 1px solid #E5E7EB;
+    background-color: var(--bg-sidebar) !important;
+    border-right: 1px solid var(--border-subtle) !important;
 }
 
 section[data-testid="stSidebar"] .block-container {
@@ -124,70 +187,78 @@ section[data-testid="stSidebar"] .block-container {
 section[data-testid="stSidebar"] h1,
 section[data-testid="stSidebar"] h2,
 section[data-testid="stSidebar"] h3 {
-    font-size: 0.85rem !important;
+    font-size: 0.78rem !important;
     font-weight: 600 !important;
     text-transform: uppercase !important;
-    letter-spacing: 0.06em !important;
-    color: #9CA3AF !important;
+    letter-spacing: 0.08em !important;
+    color: var(--text-faint) !important;
 }
 
-/* ── Buttons ── */
+/* ===========================================================
+   BUTTONS — secondary (default)
+   =========================================================== */
 .stButton > button {
     border-radius: 6px !important;
     font-weight: 500 !important;
     font-size: 0.84rem !important;
     letter-spacing: 0em !important;
-    border: 1px solid #D1D5DB !important;
-    background-color: #FFFFFF !important;
-    color: #374151 !important;
+    border: 1px solid var(--border-medium) !important;
+    background-color: var(--bg-surface) !important;
+    color: var(--text-secondary) !important;
     transition: background 0.15s, border-color 0.15s, box-shadow 0.15s !important;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
+    box-shadow: var(--shadow-xs) !important;
     padding: 0.35rem 0.9rem !important;
 }
 
 .stButton > button:hover {
-    background-color: #F3F4F6 !important;
-    border-color: #9CA3AF !important;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.08) !important;
+    background-color: var(--bg-surface-alt) !important;
+    border-color: var(--border-strong) !important;
+    box-shadow: var(--shadow-sm) !important;
 }
 
+/* Primary buttons */
 .stButton > button[kind="primary"] {
-    background-color: #1D4ED8 !important;
+    background-color: var(--accent) !important;
     color: #FFFFFF !important;
-    border-color: #1D4ED8 !important;
+    border-color: var(--accent) !important;
 }
 
 .stButton > button[kind="primary"]:hover {
-    background-color: #1E40AF !important;
-    border-color: #1E40AF !important;
+    background-color: var(--accent-hover) !important;
+    border-color: var(--accent-hover) !important;
 }
 
-/* ── Download buttons ── */
+/* ===========================================================
+   DOWNLOAD BUTTONS
+   =========================================================== */
 .stDownloadButton > button {
     border-radius: 6px !important;
     font-weight: 500 !important;
     font-size: 0.84rem !important;
-    border: 1px solid #D1D5DB !important;
-    background-color: #FFFFFF !important;
-    color: #374151 !important;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
+    border: 1px solid var(--border-medium) !important;
+    background-color: var(--bg-surface) !important;
+    color: var(--text-secondary) !important;
+    box-shadow: var(--shadow-xs) !important;
 }
 
 .stDownloadButton > button:hover {
-    background-color: #F9FAFB !important;
-    border-color: #9CA3AF !important;
+    background-color: var(--bg-surface-alt) !important;
+    border-color: var(--border-strong) !important;
 }
 
-/* ── Tabs ── */
+/* ===========================================================
+   TABS
+   =========================================================== */
 .stTabs [data-baseweb="tab-list"] {
-    border-bottom: 1px solid #E5E7EB;
+    border-bottom: 1px solid var(--border-subtle) !important;
     gap: 0;
+    background: transparent !important;
 }
 
 .stTabs [data-baseweb="tab"] {
     font-size: 0.875rem !important;
     font-weight: 500 !important;
-    color: #6B7280 !important;
+    color: var(--text-muted) !important;
     padding: 0.65rem 1.1rem !important;
     border-radius: 0 !important;
     border-bottom: 2px solid transparent !important;
@@ -196,102 +267,170 @@ section[data-testid="stSidebar"] h3 {
 }
 
 .stTabs [aria-selected="true"] {
-    color: #1D4ED8 !important;
-    border-bottom-color: #1D4ED8 !important;
+    color: var(--accent) !important;
+    border-bottom-color: var(--accent) !important;
     font-weight: 600 !important;
+    background: transparent !important;
 }
 
-/* ── Info / warning / success banners ── */
+/* Tab panel — keep transparent so page bg shows */
+.stTabs [data-baseweb="tab-panel"] {
+    background: transparent !important;
+    padding-top: 1.5rem;
+}
+
+/* ===========================================================
+   ALERTS / BANNERS
+   =========================================================== */
 .stAlert {
     border-radius: 6px !important;
     font-size: 0.875rem !important;
     border-left-width: 3px !important;
 }
 
-/* ── Metrics ── */
+/* ===========================================================
+   METRIC CARDS
+   =========================================================== */
 [data-testid="metric-container"] {
-    background: #FFFFFF;
-    border: 1px solid #E5E7EB;
-    border-radius: 8px;
-    padding: 0.75rem 1rem;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    background: var(--bg-surface) !important;
+    border: 1px solid var(--border-subtle) !important;
+    border-radius: 8px !important;
+    padding: 0.75rem 1rem !important;
+    box-shadow: var(--shadow-xs) !important;
 }
 
-[data-testid="metric-container"] [data-testid="stMetricValue"] {
-    font-size: 1.5rem !important;
-    font-weight: 700 !important;
-    color: #111827 !important;
-}
-
+/* Let Streamlit handle metric text colors — avoid overriding
+   them with hardcoded values that break in dark mode.        */
 [data-testid="metric-container"] [data-testid="stMetricLabel"] {
-    font-size: 0.75rem !important;
+    font-size: 0.72rem !important;
     font-weight: 600 !important;
     text-transform: uppercase !important;
-    letter-spacing: 0.06em !important;
-    color: #6B7280 !important;
+    letter-spacing: 0.07em !important;
+    opacity: 0.65;
 }
 
-/* ── Progress bar ── */
+/* ===========================================================
+   PROGRESS BAR
+   =========================================================== */
 .stProgress > div > div {
     border-radius: 99px !important;
     height: 3px !important;
-    background-color: #E5E7EB !important;
+    background-color: var(--border-subtle) !important;
 }
 
 .stProgress > div > div > div {
-    background-color: #1D4ED8 !important;
+    background-color: var(--accent) !important;
     border-radius: 99px !important;
 }
 
-/* ── File uploader ── */
+/* ===========================================================
+   FILE UPLOADER
+   =========================================================== */
 [data-testid="stFileUploader"] {
     border-radius: 8px !important;
 }
 
 [data-testid="stFileUploader"] section {
-    border: 1.5px dashed #D1D5DB !important;
+    border: 1.5px dashed var(--border-medium) !important;
     border-radius: 8px !important;
-    background: #FFFFFF !important;
+    background: var(--bg-surface) !important;
 }
 
-/* ── Dataframe / table ── */
+/* ===========================================================
+   DATAFRAME
+   =========================================================== */
 .stDataFrame {
-    border: 1px solid #E5E7EB !important;
+    border: 1px solid var(--border-subtle) !important;
     border-radius: 8px !important;
-    overflow: hidden;
+    overflow: hidden !important;
 }
 
-/* ── Dividers ── */
+/* ===========================================================
+   DIVIDERS
+   =========================================================== */
 hr {
-    border-color: #E5E7EB !important;
+    border-color: var(--border-subtle) !important;
     margin: 1rem 0 !important;
 }
 
-/* ── Checkbox ── */
+/* ===========================================================
+   FORM ELEMENTS
+   =========================================================== */
 .stCheckbox label {
     font-size: 0.875rem !important;
-    color: #374151 !important;
 }
 
-/* ── Number input ── */
 .stNumberInput input {
     border-radius: 6px !important;
-    border-color: #D1D5DB !important;
     font-size: 0.875rem !important;
 }
 
-/* ── Expander ── */
 .streamlit-expanderHeader {
     font-size: 0.875rem !important;
     font-weight: 500 !important;
-    color: #374151 !important;
 }
 
-/* ── Suppress Streamlit rainbow top bar ── */
+/* ===========================================================
+   TOP HEADER BAR — match page background in each mode
+   =========================================================== */
 header[data-testid="stHeader"] {
-    background: rgba(247, 248, 250, 0.95) !important;
-    border-bottom: 1px solid #E5E7EB !important;
+    background-color: var(--bg-page) !important;
+    border-bottom: 1px solid var(--border-subtle) !important;
     backdrop-filter: blur(4px);
+}
+
+/* ===========================================================
+   RESPONSIVE — tablet  (≤ 900 px)
+   =========================================================== */
+@media screen and (max-width: 900px) {
+    .main .block-container {
+        padding-top: 1.5rem;
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+
+    h1 {
+        font-size: 1.35rem !important;
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        font-size: 0.8rem !important;
+        padding: 0.55rem 0.75rem !important;
+    }
+}
+
+/* ===========================================================
+   RESPONSIVE — mobile  (≤ 600 px)
+   =========================================================== */
+@media screen and (max-width: 600px) {
+    .main .block-container {
+        padding-top: 1rem;
+        padding-left: 0.6rem;
+        padding-right: 0.6rem;
+    }
+
+    h1 {
+        font-size: 1.15rem !important;
+    }
+
+    /* Stack the nav columns so buttons don't clip */
+    [data-testid="column"] {
+        min-width: 0;
+    }
+
+    .stButton > button {
+        font-size: 0.78rem !important;
+        padding: 0.3rem 0.55rem !important;
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        font-size: 0.75rem !important;
+        padding: 0.45rem 0.55rem !important;
+    }
+
+    [data-testid="metric-container"] {
+        padding: 0.55rem 0.7rem !important;
+    }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -892,11 +1031,11 @@ with tab_annotate:
     with h_col2:
         st.markdown(
             f"<div style='text-align:center;font-size:0.9rem;padding-top:6px;"
-            f"color:#6B7280;font-family:Inter,sans-serif;'>"
-            f"<span style='font-weight:600;color:#111827;'>Image {idx + 1} of {n_total}</span>"
+            f"color:var(--text-muted);font-family:Inter,sans-serif;'>"
+            f"<span style='font-weight:600;color:var(--text-primary);'>Image {idx + 1} of {n_total}</span>"
             f"&nbsp;&nbsp;·&nbsp;&nbsp;"
-            f"<code style='background:#F3F4F6;padding:2px 6px;border-radius:4px;"
-            f"font-size:0.82rem;color:#374151;'>{name_map[active_sig]}</code>"
+            f"<code style='background:var(--bg-surface-alt);padding:2px 6px;border-radius:4px;"
+            f"font-size:0.82rem;color:var(--text-secondary);'>{name_map[active_sig]}</code>"
             f"</div>",
             unsafe_allow_html=True,
         )
