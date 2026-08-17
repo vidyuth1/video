@@ -273,24 +273,47 @@ section[data-testid="stSidebar"] h3 {
    =========================================================== */
 .stTabs [data-baseweb="tab-list"] {
     border-bottom: none !important;
-    gap: 0.4rem;
+    gap: 0.3rem;
     background: var(--bg-surface-alt) !important;
-    padding: 0.35rem !important;
+    padding: 0.3rem !important;
     border-radius: 10px !important;
     border: 1px solid var(--border-subtle) !important;
     width: fit-content;
+    position: relative;
+}
+
+/* baseweb renders a sliding underline + a full-width border line as
+   siblings inside the tab-list — kill both, the pill background above
+   already communicates selection state. */
+.stTabs [data-baseweb="tab-highlight"],
+.stTabs [data-baseweb="tab-border"] {
+    display: none !important;
 }
 
 .stTabs [data-baseweb="tab"] {
-    font-size: 0.9rem !important;
+    font-size: 0.88rem !important;
     font-weight: 600 !important;
     color: var(--text-muted) !important;
-    padding: 0.55rem 1.2rem !important;
+    padding: 0.55rem 1.15rem !important;
     border-radius: 7px !important;
     border-bottom: none !important;
     background: transparent !important;
     letter-spacing: 0 !important;
     transition: background 0.15s, color 0.15s !important;
+}
+
+/* Small solid-color dot instead of an emoji glyph — renders identically
+   across platforms/fonts instead of falling back to a mono outline. */
+.stTabs [data-baseweb="tab"] p::before {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.55;
+    margin-right: 8px;
+    vertical-align: middle;
 }
 
 .stTabs [data-baseweb="tab"]:hover {
@@ -308,6 +331,10 @@ section[data-testid="stSidebar"] h3 {
 .stTabs [aria-selected="true"]:hover {
     color: #FFFFFF !important;
     background: var(--accent-hover) !important;
+}
+
+.stTabs [aria-selected="true"] p::before {
+    opacity: 0.9;
 }
 
 /* Tab panel — keep transparent so page bg shows */
@@ -374,6 +401,22 @@ section[data-testid="stSidebar"] h3 {
 }
 
 /* ===========================================================
+   BORDERED CONTAINERS  — st.container(border=True)
+   used as "cards" around images / interactive grids
+   =========================================================== */
+div[data-testid="stVerticalBlockBorderWrapper"]:has(> div > div[data-testid="stVerticalBlock"]) {
+    border-radius: 10px !important;
+    overflow: hidden;
+}
+
+[data-testid="stVerticalBlockBorderWrapper"] > div {
+    border-radius: 10px !important;
+    border-color: var(--border-subtle) !important;
+    background: var(--bg-surface) !important;
+    box-shadow: var(--shadow-xs) !important;
+}
+
+/* ===========================================================
    DATAFRAME
    =========================================================== */
 .stDataFrame {
@@ -405,6 +448,13 @@ hr {
 .streamlit-expanderHeader {
     font-size: 0.875rem !important;
     font-weight: 500 !important;
+}
+
+[data-testid="stExpander"] {
+    border: 1px solid var(--border-subtle) !important;
+    border-radius: 8px !important;
+    background: var(--bg-surface) !important;
+    box-shadow: var(--shadow-xs) !important;
 }
 
 /* ===========================================================
@@ -1051,7 +1101,7 @@ st.session_state.current_idx = max(0, min(st.session_state.current_idx, n_total 
 # ---------------------------------------------------------------------------
 # Top navigation tabs
 # ---------------------------------------------------------------------------
-tab_annotate, tab_export = st.tabs(["📷 Annotate Images", "📊 Export Results"])
+tab_annotate, tab_export = st.tabs(["Annotate Images", "Export Results"])
 
 # ===========================================================================
 # TAB 1 — ANNOTATE
@@ -1076,12 +1126,16 @@ with tab_annotate:
             st.rerun()
     with h_col2:
         st.markdown(
-            f"<div style='text-align:center;font-size:0.9rem;padding-top:6px;"
-            f"color:var(--text-muted);font-family:Inter,sans-serif;'>"
-            f"<span style='font-weight:600;color:var(--text-primary);'>Image {idx + 1} of {n_total}</span>"
-            f"&nbsp;&nbsp;·&nbsp;&nbsp;"
-            f"<code style='background:var(--bg-surface-alt);padding:2px 6px;border-radius:4px;"
-            f"font-size:0.82rem;color:var(--text-secondary);'>{name_map[active_sig]}</code>"
+            f"<div style='display:flex;align-items:center;justify-content:center;gap:0.6rem;"
+            f"height:100%;padding:0.3rem 0.5rem;font-family:Inter,sans-serif;'>"
+            f"<span style='background:var(--accent-subtle);color:var(--accent);"
+            f"font-weight:700;font-size:0.8rem;padding:0.3rem 0.7rem;border-radius:99px;"
+            f"white-space:nowrap;'>Image {idx + 1} / {n_total}</span>"
+            f"<span style='color:var(--border-medium);'>·</span>"
+            f"<code style='background:var(--bg-surface-alt);border:1px solid var(--border-subtle);"
+            f"padding:0.3rem 0.7rem;border-radius:6px;font-size:0.8rem;"
+            f"color:var(--text-secondary);max-width:340px;overflow:hidden;"
+            f"text-overflow:ellipsis;white-space:nowrap;'>{name_map[active_sig]}</code>"
             f"</div>",
             unsafe_allow_html=True,
         )
@@ -1206,7 +1260,8 @@ with tab_annotate:
                 key=f"gap_row_{active_sig}",
             )
 
-            st.image(work_img, use_container_width=True, caption="Preview — not yet calibrated")
+            with st.container(border=True):
+                st.image(work_img, use_container_width=True, caption="Preview — not yet calibrated")
 
             if st.button("Start calibration", key=f"start_calib_{active_sig}", type="primary"):
                 gap_after_row = int(gap_after_row)
@@ -1233,7 +1288,8 @@ with tab_annotate:
                 work_img, bounds, active_state["wells"], show_labels,
                 calib_points=calib_pts, gap_after_row=gap_after_row,
             )
-            click = streamlit_image_coordinates(overlay, key=f"calib_{active_sig}")
+            with st.container(border=True):
+                click = streamlit_image_coordinates(overlay, key=f"calib_{active_sig}")
 
             last_key = f"last_calib_click_{active_sig}"
             if click is not None:
@@ -1265,10 +1321,21 @@ with tab_annotate:
         st.subheader("Step 2 — Click a cell to toggle Empty / Present")
 
         _active_gap = active_calib.get("gap_after_row", 0) if active_calib else 0
-        gap_note = f"  ·  gap after row {_active_gap}" if _active_gap > 0 else ""
-        st.caption(
-            f"Green = present   Red = empty   ·   "
-            f"Grid: {COLS} columns (A–{COL_LABELS[-1]}) × {ROWS} rows{gap_note}"
+        gap_note = f" · gap after row {_active_gap}" if _active_gap > 0 else ""
+        st.markdown(
+            f"<div style='display:flex;align-items:center;gap:1.1rem;flex-wrap:wrap;"
+            f"font-size:0.85rem;color:var(--text-muted);margin:-0.35rem 0 0.9rem 0;"
+            f"font-family:Inter,sans-serif;'>"
+            f"<span style='display:inline-flex;align-items:center;gap:0.4rem;'>"
+            f"<span style='width:12px;height:12px;border-radius:3px;background:#2ECC71;"
+            f"display:inline-block;'></span>Present</span>"
+            f"<span style='display:inline-flex;align-items:center;gap:0.4rem;'>"
+            f"<span style='width:12px;height:12px;border-radius:3px;background:#E74C3C;"
+            f"display:inline-block;'></span>Empty</span>"
+            f"<span style='color:var(--border-medium);'>·</span>"
+            f"<span>Grid: {COLS} columns (A–{COL_LABELS[-1]}) × {ROWS} rows{gap_note}</span>"
+            f"</div>",
+            unsafe_allow_html=True,
         )
 
         gap_band = None
@@ -1278,7 +1345,8 @@ with tab_annotate:
         overlay = draw_grid_overlay(
             work_img, bounds, active_state["wells"], show_labels, gap_band=gap_band
         )
-        click = streamlit_image_coordinates(overlay, key=f"mark_{active_sig}")
+        with st.container(border=True):
+            click = streamlit_image_coordinates(overlay, key=f"mark_{active_sig}")
 
         last_key = f"last_mark_click_{active_sig}"
         if click is not None:
@@ -1307,22 +1375,36 @@ with tab_annotate:
                 st.session_state.current_idx -= 1
                 st.rerun()
         with nav2:
-            progress_labels = []
+            badges = []
             for i, (s, n) in enumerate(sigs_and_names):
                 state_i = all_states[s]
                 _c = state_i.get("calibration")
                 calib_ok = bool(_c) and len(_c.get("points", [])) >= required_calibration_points(_c.get("gap_after_row", 0))
-                status_marker = "[done]" if calib_ok else "[pending]"
-                progress_labels.append(f"{status_marker} {i + 1}")
-            st.caption("  ".join(progress_labels))
+                is_active = (i == idx)
+                if calib_ok:
+                    bg, fg, border = "#DCFCE7", "#15803D", "transparent"
+                else:
+                    bg, fg, border = "transparent", "var(--text-faint)", "var(--border-medium)"
+                ring = "box-shadow:0 0 0 2px var(--accent);" if is_active else ""
+                badges.append(
+                    f"<span style='display:inline-flex;align-items:center;justify-content:center;"
+                    f"width:26px;height:26px;border-radius:50%;background:{bg};color:{fg};"
+                    f"border:1px solid {border};font-size:0.72rem;font-weight:700;{ring}'>"
+                    f"{i + 1}</span>"
+                )
+            st.markdown(
+                f"<div style='display:flex;justify-content:center;align-items:center;"
+                f"gap:0.4rem;flex-wrap:wrap;padding-top:0.35rem;'>{''.join(badges)}</div>",
+                unsafe_allow_html=True,
+            )
         with nav3:
             if st.button("Next →", key="btn_next_bottom", disabled=(idx == n_total - 1),
                          use_container_width=True, type="primary"):
                 st.session_state.current_idx += 1
                 st.rerun()
 
-            if idx == n_total - 1:
-                st.success("All images reviewed. Open the Export Results tab to download your report.")
+        if idx == n_total - 1:
+            st.success("All images reviewed. Open the **Export Results** tab to download your report.")
 
 
 # ===========================================================================
